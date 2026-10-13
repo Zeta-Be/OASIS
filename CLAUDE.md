@@ -23,6 +23,8 @@ El objetivo del sistema es saber cuánta plata corresponde a cada material, día
 | Autenticación y RLS | `rls_fase2.sql` — funciones de identidad, políticas, trigger de vínculo |
 | Sistema de diseño | `DISENO.md` — tokens, tipografía, componentes y pantallas de la interfaz |
 | Interfaz interna | `app/` — sitio estático; login con correo y contraseña. El código de 6 dígitos por correo se ve como «próximamente» hasta tener correo propio (ver Login). Cuatro pantallas: Compras, Materiales, Inversión, Alertas. Con rol LECTURA, Compras y Materiales se muestran como texto, sin edición |
+| Portal externo | `app/portal.html` (+ `js/portal.js`, `css/portal.css`) — PROVEEDOR y AGENCIA. El mismo login los manda ahí según el rol. Ver «Acceso externo» |
+| Acceso externo y auditoría | `sql/fase3_portal.sql` (`fn_mis_compras`, `v_materiales_externos`, políticas, funciones de escritura, `auditoria`); pruebas en `sql/fase3_portal_pruebas.sql` (se revierten solas) |
 | Sitio publicado | https://zeta-be.github.io/OASIS/ — GitHub Pages publica `app/` en cada push a `main` (`.github/workflows/pages.yml`). Vive en la subcarpeta `/OASIS/`: toda ruta dentro de `app/` debe ser relativa, nunca empezar con `/` |
 | Plantilla de correo de acceso | `supabase/plantilla_codigo.html` — se pega a mano en Supabase → Authentication → Emails (Magic Link y Confirm signup). Todavía no se puede: Supabase no deja editar plantillas sin SMTP propio |
 | Detector de duplicados | `sql/duplicados.sql` (tabla, RLS, `fn_unificar_duplicado`, `fn_rechazar_duplicado`), Edge Function `supabase/functions/detectar-duplicados/` (el prompt está en `prompt.md`), prueba local `supabase/probar_duplicados.ts`. Ver «Detector de duplicados» |
@@ -45,7 +47,7 @@ Enums: `tipo_costo` (EXHIBICION, PRODUCCION, IMPUESTOS), `tipo_compra` (DIRECTO,
 
 **Rol LECTURA.** Consulta interna sin captura: jefes, otras áreas, gente nueva en planning. Ve las cuatro pantallas con los datos de sus mercados, filtra y exporta; no escribe nada. No es el rol de BI: BI se conectará a las vistas directamente, sin usuario en la app, y eso se define en la Fase 4.
 
-Vistas: `v_materiales` (nivel material, con taxonomía), `v_inversion_diaria`, `v_inversion_semanal`, `v_inversion_total`, `v_alertas` (alerta, referencia y, para enlazar, mercado, compra_id, material_id), `v_cuadre`, `v_sub_campanas` (glosario de cada mercado sin su campaña OOH; para elegir sub campaña en Materiales).
+Vistas: `v_materiales_externos` (la única para PROVEEDOR y AGENCIA; ver «Acceso externo»), `v_materiales` (nivel material, con taxonomía), `v_inversion_diaria`, `v_inversion_semanal`, `v_inversion_total`, `v_alertas` (alerta, referencia y, para enlazar, mercado, compra_id, material_id), `v_cuadre`, `v_sub_campanas` (glosario de cada mercado sin su campaña OOH; para elegir sub campaña en Materiales).
 
 **La interfaz lee las vistas de inversión por `fn_inversion_diaria()`, `fn_inversion_semanal()` y `fn_inversion_total()`**, nunca directo. Con RLS el planificador estima mal cuántas compras ve el usuario y la vista pasa de 0,5 s a 14 s; `authenticated` corta a los 8 s. Las funciones devuelven la vista tal cual, con permisos del usuario, y solo apagan los nested loops. BI (sin RLS) no se ve afectado. Si se agrega otra lectura de esas vistas desde la app, va por estas funciones.
 
@@ -56,6 +58,35 @@ Vistas: `v_materiales` (nivel material, con taxonomía), `v_inversion_diaria`, `
 **Tramos.** Cuando una campaña cruza dos compras del mismo soporte se parte en un material por compra; los tramos comparten `materiales.grupo_tramo` (uuid, nulo si no está partido). La interfaz crea y parte materiales con `fn_guardar_tramos(material_id, datos, tramos)`: una transacción, con permisos del usuario (RLS aplica), que asigna la siguiente letra libre de cada compra y rechaza tramos fuera del periodo. Mismo soporte = mismo mercado, proveedor, ubicación y tipo de costo. No hay CHECK de periodo en la tabla: el Sheets todavía trae materiales fuera de su compra y la carga no debe fallar.
 
 Cambios de Fase 2 sobre el esquema: `sql/fase2_compras.sql`, `sql/fase2_materiales.sql`, `sql/fase2_alertas.sql`, `sql/fase2_inversion.sql`, `sql/fase2_tiempo.sql`, `sql/fase2_mes_compra.sql`.
+
+## Acceso externo (Fase 3)
+
+Primera vez que entran usuarios de fuera de ZetaBé. La regla: **un externo no ve nada del Flow**. Ni la tabla `compras`, ni una vista de compras, ni fechas de la compra, ni tarifas, descuentos, valor total o inversión. Ve sus materiales como hoy ve el Tracking en Sheets, y eso se cumple en la base, no solo en la pantalla.
+
+| Rol | Ve | Escribe |
+|---|---|---|
+| PROVEEDOR | Los materiales de las compras de **su proveedor** (`usuarios.proveedor_id`) | Reporte de implementación y evidencia, solo con `fn_reportar_implementacion` |
+| AGENCIA | Los materiales de las compras de **sus mercados** (`usuario_mercados`) | Enlace, solo con `fn_actualizar_enlace` |
+
+- **Una sola regla, `fn_mis_compras()`:** SECURITY DEFINER, devuelve solo ids de compra (PROVEEDOR: las de su `proveedor_id`; AGENCIA: las de `fn_mis_mercados()`; internos: ninguna). La usan la política de materiales, la vista y las dos funciones de escritura. Si cambia qué le toca a un externo, se cambia ahí.
+- **`v_materiales_externos`:** la única vista para externos y lo único que consulta el portal. Dueño postgres, `security_invoker = false`, `security_barrier = true`, filtrada con `fn_mis_compras()`. Columnas, exactamente: id (llave del material), codigo, sub_campana, referencia, fecha_inicio, fecha_fin, enlace, reporte_implementacion, evidencia_url (las del material) y compra (código), proveedor, formato, ubicacion, ciudad, tipo_costo (las que el Tracking hereda por VLOOKUP). Agregar una columna aquí es decidir mostrársela a proveedores y agencias.
+- **compras:** ninguna política para externos; `SELECT * FROM compras` les da cero filas. No hay vista de compras expuesta a `authenticated`.
+- **materiales:** política `lectura_externos`, solo SELECT, con `compra_id IN (SELECT fn_mis_compras())`. No puede ser `EXISTS (… FROM compras …)` como en los internos: esa subconsulta pasa por RLS y para un externo siempre daría falso. Sin políticas de INSERT, UPDATE ni DELETE: un PATCH por la API cambia cero filas. Ojo: por esta política un externo que consulte la tabla directo también ve las columnas técnicas del material (`compra_id`, `secuencia`, `sub_campana_id`, `referencia`, `grupo_tramo`); nada del Flow.
+- **Escritura:** `fn_reportar_implementacion(material_id, reporte, evidencia_url)` y `fn_actualizar_enlace(material_id, enlace)` son SECURITY DEFINER: revisan rol y pertenencia con `fn_mis_compras()`, exigen enlaces `https://` (`fn_es_url`) y tocan solo sus campos. Si el material no es suyo, error 42501. Los internos no las usan: editan en Materiales.
+- **Catálogos:** los externos leen de `campanas` solo las sub campañas de sus materiales. `proveedores`, `mercados`, `configuracion`, `usuario_mercados` y `duplicados_propuestos` siguen solo para internos. Cualquier usuario activo lee su propia fila de `usuarios` (el login la necesita para saber a dónde mandarlo).
+- **Todo lo demás da cero filas, no 403:** las vistas de inversión, `v_materiales`, `v_alertas`, `v_cuadre` y `v_sub_campanas` cruzan con tablas que el externo no ve. Con un solo rol de Postgres (`authenticated`) para todos, la base no puede negar una vista a unos y dársela a otros; lo que la vacía es RLS. **Pendiente opcional:** un rol de Postgres aparte para externos (por el hook de Supabase Auth que pone `role` en el JWT), sin GRANT sobre compras ni sobre las vistas de inversión. Daría error 403 real y protegería aunque una política quedara mal; es un cambio de arquitectura, no urgente.
+- **`fn_mis_mercados()`:** para PROVEEDOR devuelve el mercado de su proveedor; para AGENCIA, sus `usuario_mercados`. Las políticas internas exigen rol interno, así que esto no les abre nada.
+- **Auditoría:** tabla `auditoria` (tabla, fila_id, campo, valor_anterior, valor_nuevo, usuario_id, en). Un trigger en `compras` y `materiales` registra cada campo cambiado, de cualquier rol; alta y baja van como una fila con `campo` = `(alta)` o `(baja)` y la fila completa en JSON. No registra `actualizado_en` ni un número que solo cambia de escala (125000000 → 125000000.00). `usuario_id` nulo = cambio sin login de la app (la carga desde Sheets, una conexión directa). Solo ADMIN la lee; nadie escribe en ella por la API.
+- **Portal:** los externos entran a `portal.html` (el login y las pantallas internas los redirigen; la redirección es comodidad, la protección es RLS). Una card con sus materiales, filtros por mes y sub campaña, calendario sin costos y CSV con las mismas columnas de la vista. La evidencia se comprueba antes de guardar: https y que el servidor responda. El navegador no puede saber si un archivo de Drive está compartido; eso no se valida.
+- **Duplicados:** si se unifica un proveedor, sus compras pasan al proveedor canónico. Un usuario PROVEEDOR que apuntaba al proveedor absorbido deja de ver esas compras: hay que cambiar su `proveedor_id` al canónico.
+- **Pruebas:** después de tocar algo de esto, correr `sql/fase3_portal_pruebas.sql` en el SQL Editor. Crea usuarios de prueba (PROVEEDOR de EFECTIMEDIOS, AGENCIA de MCO, PLANNING, LECTURA, ADMIN), simula sus sesiones como la API y termina con un error a propósito que revierte todo; el informe sale en el mensaje del error, una línea OK o FALLA por prueba. Recorre todas las vistas de `public` salvo `v_materiales_externos`, así que una vista nueva queda cubierta sola. Tiene fijo que EFECTIMEDIOS ve 190 materiales (`ESPERADO_PROVEEDOR`): si el Sheets cambia los suyos, actualizarlo.
+
+**Alta de un proveedor** (en este orden):
+1. Su fila en `proveedores` si no existe (una por proveedor y mercado, con `grupo_id`). Ojo con los duplicados: usar el nombre que ya tienen sus compras.
+2. Su fila en `usuarios`: correo exacto, nombre, `rol = 'PROVEEDOR'`, `proveedor_id` = el id del paso 1. La base exige `proveedor_id` para PROVEEDOR y lo prohíbe para los demás roles. Va **antes** de crear el login, para que el trigger complete `auth_user_id`.
+3. El login: Supabase → Authentication → Users → Add user → Create new user, mismo correo, una contraseña, «Auto Confirm User» marcado. La contraseña se entrega por un canal privado.
+
+Un PROVEEDOR no lleva filas en `usuario_mercados`: su mercado sale del proveedor. Una **AGENCIA** se da de alta igual que un interno: fila en `usuarios` con `rol = 'AGENCIA'`, sus filas en `usuario_mercados` y el login.
 
 ## Detector de duplicados
 
@@ -141,13 +172,13 @@ Se usa código y no enlace porque los escáneres del correo corporativo abren lo
 
 **Hecho:** esquema, vistas de cálculo, carga en vivo desde Sheets, validación contra Sheets, repositorio, corrección de vocabulario, autenticación y RLS para roles internos. Fase 2 completa: las cuatro pantallas de la interfaz interna (Compras, Materiales, Inversión, Alertas) terminadas y probadas.
 
-**RLS:** activo con 18 políticas para roles internos (PLANNING, ZB, LECTURA, ADMIN), definidas en `rls_fase2.sql`. Catálogos: lectura para internos, escritura ADMIN. `compras` y `materiales`: según `fn_mis_mercados()`; LECTURA no escribe. `usuarios` y `usuario_mercados`: cada uno lo suyo, ADMIN todo. Las vistas tienen `security_invoker` y `anon` no tiene acceso. AGENCIA y PROVEEDOR no tienen políticas: sin acceso hasta la Fase 3. `postgres` salta RLS, así que la carga y BI no se ven afectados.
+**RLS:** activo con 18 políticas para roles internos (PLANNING, ZB, LECTURA, ADMIN), definidas en `rls_fase2.sql`, y las de externos de `sql/fase3_portal.sql` (ver «Acceso externo»). Catálogos: lectura para internos, escritura ADMIN. `compras` y `materiales`: según `fn_mis_mercados()`; LECTURA no escribe. `usuarios` y `usuario_mercados`: cada uno lo suyo, ADMIN todo. Las vistas tienen `security_invoker` y `anon` no tiene acceso. `postgres` salta RLS, así que la carga y BI no se ven afectados.
 
 **Fase 2 (completa):** interfaz interna para planning y ZB, construida con Claude Code siguiendo `DISENO.md`. Cuatro pantallas: Compras, Materiales, Inversión y Alertas. Consulta se eliminó: Materiales la absorbe (filtros, solo lectura para LECTURA y exportar a CSV). Inversión (gráficos de resumen y tablas total, semanal y diaria) y Alertas son de solo lectura para todos los roles; la única escritura es la fecha de corte (ADMIN). Los enlaces de Alertas abren Compras o Materiales con `?mercado=…&compra=…` o `&material=…` (y `&partir=1` para fuera de periodo). El último mercado elegido se recuerda en el navegador y la barra muestra el número de alertas de ese mercado.
 
 **Siguiente:**
 1. **Despliegue y piloto con usuarios internos.** Publicar `app/` como sitio estático, dar de alta a los usuarios del piloto (los dos pasos de abajo) y ajustar con lo que reporten. Los equipos siguen llenando el Sheets hasta que el piloto confirme el corte.
-2. **Fase 3: portal externo.** Agencias y proveedores (roles AGENCIA y PROVEEDOR, hoy sin políticas ni acceso).
+2. **Fase 3: portal externo.** En la rama `feature/portal`: acceso externo, auditoría y `portal.html`. Falta piloto con un proveedor y una agencia.
 3. **Fase 4: BI.** Conexión directa de BI a las vistas, sin usuario en la app.
 
 **Datos por limpiar en el Sheets** (trabajo del equipo, no del sistema), según la carga del 5 de octubre de 2026: 1 material sin fechas (053-A), 109 materiales fuera del periodo de su compra (se resuelven con «Partir →» en Materiales), 12 compras sin materiales, proveedores duplicados (`JCDECAUX`/`JCDX`, `PUBLICIDAD BARRANQUILLA`/`PUBLICIDAD BQUILLA`).

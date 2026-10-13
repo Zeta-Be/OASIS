@@ -1,0 +1,14 @@
+/* Portal externo (PROVEEDOR y AGENCIA). Sobre materiales.css. Fuente de verdad: DISENO.md */
+
+/* Barra: migas en lugar de la navegación interna */
+.topbar .migas { font-size: 12px; color: #A39D8B; }
+.topbar .migas .sep { margin: 0 6px; }
+.topbar .migas .cuenta { color: var(--y); font-weight: 700; }
+
+.alerta.ayuda-portal { max-width: 860px; }
+
+/* Dos filtros: mes y sub campaña */
+.filtros.filtros-portal { grid-template-columns: repeat(2, minmax(160px, 260px)); }
+
+.tabla-portal .c1 { width: 240px; min-width: 240px; max-width: 240px; }
+.tabla-portal td.corto { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }

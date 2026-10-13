@@ -6,6 +6,8 @@ const sb = window.supabase.createClient(
 );
 
 const ROLES_INTERNOS = ['PLANNING', 'ZB', 'LECTURA', 'ADMIN'];
+const ROLES_EXTERNOS = ['PROVEEDOR', 'AGENCIA'];
+const esExterno = (usuario) => ROLES_EXTERNOS.includes(usuario.rol);
 
 // Fila de `usuarios` del login actual, o null.
 // RLS solo deja leer la fila propia y solo si el usuario está activo, así que
@@ -16,22 +18,41 @@ async function usuarioActual() {
 
   const { data, error } = await sb
     .from('usuarios')
-    .select('id, correo, nombre, rol, activo')
+    .select('id, correo, nombre, rol, activo, proveedor_id')
     .eq('auth_user_id', session.user.id)
     .maybeSingle();
 
   if (error) throw error;
-  const usuario = data && data.activo && ROLES_INTERNOS.includes(data.rol) ? data : null;
+  const conocido = data && [...ROLES_INTERNOS, ...ROLES_EXTERNOS].includes(data.rol);
+  const usuario = conocido && data.activo ? data : null;
   return { session, usuario };
 }
 
-// Para páginas internas: sin sesión o sin acceso, vuelve al login.
+// Adónde va cada rol al entrar. Es solo comodidad: lo que protege los datos es
+// RLS, no esta redirección.
+function paginaDeInicio(usuario) {
+  return esExterno(usuario) ? 'portal.html' : 'compras.html';
+}
+
+function irA(pagina) {
+  window.location.replace(pagina);
+  return new Promise(() => {}); // detiene la página mientras redirige
+}
+
+// Para páginas internas: sin sesión o sin acceso, vuelve al login; un externo
+// va al portal.
 async function requerirAcceso() {
   const { session, usuario } = await usuarioActual();
-  if (!session || !usuario) {
-    window.location.replace('index.html');
-    return new Promise(() => {}); // detiene la página mientras redirige
-  }
+  if (!session || !usuario) return irA('index.html');
+  if (esExterno(usuario)) return irA('portal.html');
+  return usuario;
+}
+
+// Para el portal: solo PROVEEDOR y AGENCIA; un interno va a su pantalla.
+async function requerirAccesoExterno() {
+  const { session, usuario } = await usuarioActual();
+  if (!session || !usuario) return irA('index.html');
+  if (!esExterno(usuario)) return irA(paginaDeInicio(usuario));
   return usuario;
 }
 

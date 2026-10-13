@@ -163,3 +163,9 @@ Dos columnas: izquierda `--k` con la marca y una frase en `#A39D8B`; derecha el 
 | Alertas | v_alertas | Solo lectura. Filtro de mercado; una card por tipo con el conteo en el título, en este orden: fuera de periodo, sin fechas, sin sub campaña, compra sin materiales, sub campaña de otro mercado. Sin casos, sin card. Cada referencia abre Compras o Materiales con la fila resaltada; fuera de periodo abre el panel de partición |
 
 Cada pantalla lleva la barra superior, el título condensado y una card. Las tablas editables siguen el patrón de tabla editable: inputs sin borde dentro de la celda, calculadas en `--calc`, errores en la celda.
+
+## Pantalla de la Fase 3 (portal externo)
+
+| Pantalla | Para | Componentes |
+|---|---|---|
+| Portal | PROVEEDOR, AGENCIA | Lee solo `v_materiales_externos`: nada del Flow (ni fechas de la compra, ni montos). Barra superior sin navegación interna: marca y migas «Portal / EFECTIMEDIOS» (o «Agencia»). Una card con la tabla de materiales: código, compra (código + ubicación), formato, ciudad, tipo de costo, sub campaña, referencia, enlace, imagen, reporte, evidencia y fechas del material; para AGENCIA también proveedor. Todo en `--calc` salvo lo que el rol edita: reporte y evidencia (PROVEEDOR) o enlace (AGENCIA), con guardado al salir de la fila. Filtros de mes y sub campaña; KPIs de lo que falta por llenar; calendario igual al de Materiales, sin costos; exportar CSV con las mismas columnas |
