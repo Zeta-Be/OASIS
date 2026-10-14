@@ -9,6 +9,8 @@
 -- Cada sesión se simula como la arma la API: rol authenticated y el JWT en
 -- request.jwt.claims, que es de donde auth.uid() saca el usuario.
 --
+-- Requiere sql/fase3_portal.sql y sql/fase3_evidencias.sql aplicados.
+--
 -- El proveedor de prueba es EFECTIMEDIOS (MCO). Al escribir esto tenía 190
 -- materiales; si el Sheets agrega o quita materiales suyos, actualizar
 -- ESPERADO_PROVEEDOR.
@@ -54,6 +56,15 @@ DECLARE
     d        date;
     x        text;
     m        public.materiales;
+    -- evidencias
+    v_otro_prov   integer;
+    ev_propia     bigint;
+    ev_ajena      bigint;
+    ev_de_otro    bigint;
+    ruta_propia   text;
+    ruta_ajena    text;
+    e             public.evidencias;
+    k             bigint;
 BEGIN
     -- -------------------------------------------------------------- Preparación
     SELECT id INTO v_mco FROM public.mercados WHERE codigo = 'MCO';
@@ -187,30 +198,17 @@ BEGIN
     r := r || text '--- PROVEEDOR (EFECTIMEDIOS): escritura';
 
     BEGIN
-        m := public.fn_reportar_implementacion(m_propio, 'Instalado el lunes', 'https://drive.google.com/file/d/prueba123456/view');
+        m := public.fn_reportar_implementacion(m_propio, 'Instalado el lunes');
         r := r || format('%s  fn_reportar_implementacion en material suyo (%s)', CASE WHEN m.reporte_implementacion = 'Instalado el lunes' THEN 'OK   ' ELSE 'FALLA' END, m_propio);
     EXCEPTION WHEN others THEN
         r := r || format('FALLA  fn_reportar_implementacion en material suyo: %s', SQLERRM);
     END;
     BEGIN
-        PERFORM public.fn_reportar_implementacion(m_ajeno, 'x', NULL);
+        PERFORM public.fn_reportar_implementacion(m_ajeno, 'x');
         r := r || text 'FALLA  fn_reportar_implementacion en material de otro proveedor: lo aceptó';
     EXCEPTION WHEN insufficient_privilege THEN
         r := r || format('OK     fn_reportar_implementacion en material de otro proveedor: %s', SQLERRM);
     END;
-    BEGIN
-        PERFORM public.fn_reportar_implementacion(m_propio, 'x', 'http://ejemplo.com/foto.jpg');
-        r := r || text 'FALLA  evidencia http:// (sin s): la aceptó';
-    EXCEPTION WHEN invalid_parameter_value THEN
-        r := r || format('OK     evidencia http:// (sin s): %s', SQLERRM);
-    END;
-    BEGIN
-        PERFORM public.fn_reportar_implementacion(m_propio, 'x', 'javascript:alert(1)');
-        r := r || text 'FALLA  evidencia que no es enlace: la aceptó';
-    EXCEPTION WHEN invalid_parameter_value THEN
-        r := r || text 'OK     evidencia que no es enlace: rechazada';
-    END;
-
     UPDATE public.materiales SET referencia = 'HACKEO' WHERE id = m_propio;
     GET DIAGNOSTICS n = ROW_COUNT;
     r := r || format('%s  PATCH referencia por la API: %s filas cambiadas', CASE WHEN n = 0 THEN 'OK   ' ELSE 'FALLA' END, n);
@@ -256,8 +254,10 @@ BEGIN
     SELECT referencia, fecha_inicio INTO t, d FROM public.materiales WHERE id = m_propio;
     SELECT count(*) INTO n FROM public.auditoria
     WHERE tabla = 'materiales' AND fila_id = m_propio AND usuario_id = u_prov
-      AND campo IN ('reporte_implementacion', 'evidencia_url');
-    r := r || format('%s  auditoria: %s filas del reporte (reporte y evidencia) con el usuario del proveedor', CASE WHEN n = 2 THEN 'OK   ' ELSE 'FALLA' END, n);
+      AND campo = 'reporte_implementacion';
+    r := r || format('%s  auditoria: %s fila del reporte con el usuario del proveedor', CASE WHEN n = 1 THEN 'OK   ' ELSE 'FALLA' END, n);
+    SELECT evidencia_url INTO x FROM public.materiales WHERE id = m_propio;
+    r := r || format('%s  el reporte ya no toca evidencia_url', CASE WHEN x IS NULL THEN 'OK   ' ELSE 'FALLA' END);
     SELECT count(*) INTO n FROM public.auditoria WHERE fila_id = m_propio AND campo IN ('referencia', 'fecha_inicio');
     r := r || format('%s  referencia y fecha_inicio intactas, sin auditoría de cambio',
                      CASE WHEN t IS NOT DISTINCT FROM v_ref AND d IS NOT DISTINCT FROM v_fi AND n = 0 THEN 'OK   ' ELSE 'FALLA' END);
@@ -279,7 +279,7 @@ BEGIN
         r := r || text 'OK     enlace no válido: rechazado';
     END;
     BEGIN
-        PERFORM public.fn_reportar_implementacion(m_propio, 'x', NULL);
+        PERFORM public.fn_reportar_implementacion(m_propio, 'x');
         r := r || text 'FALLA  fn_reportar_implementacion como agencia: lo aceptó';
     EXCEPTION WHEN insufficient_privilege THEN
         r := r || text 'OK     fn_reportar_implementacion como agencia: rechazado';
@@ -294,6 +294,204 @@ BEGIN
     SELECT count(*) INTO n FROM public.auditoria
     WHERE tabla = 'materiales' AND fila_id = m_ajeno AND usuario_id = u_ag AND campo = 'enlace';
     r := r || format('%s  auditoria: cambio de enlace con el usuario de la agencia', CASE WHEN n = 1 THEN 'OK   ' ELSE 'FALLA' END);
+
+
+    -- ============================================================== Evidencias y Storage
+    r := r || text '--- Evidencias (tabla y bucket)';
+    SELECT id::text = 'evidencias' AND NOT public AND file_size_limit = 52428800
+           AND allowed_mime_types @> ARRAY['image/jpeg','image/png','image/webp','video/mp4','video/quicktime','video/webm']
+           AND cardinality(allowed_mime_types) = 6
+      INTO STRICT x
+    FROM storage.buckets WHERE id = 'evidencias';
+    r := r || format('%s  bucket evidencias: privado, 50 MB por archivo, solo fotos y videos permitidos', CASE WHEN x = 'true' THEN 'OK   ' ELSE 'FALLA' END);
+
+    -- Lo ajeno lo pone postgres: un archivo y un enlace en un material de otro
+    -- proveedor, y un enlace en un material de EFECTIMEDIOS subido por otra persona.
+    SELECT c.proveedor_id INTO v_otro_prov FROM public.materiales mt JOIN public.compras c ON c.id = mt.compra_id WHERE mt.id = m_ajeno;
+    ruta_ajena := v_otro_prov || '/' || m_ajeno || '/ajena.jpg';
+    INSERT INTO storage.objects (bucket_id, name, owner_id, metadata)
+    VALUES ('evidencias', ruta_ajena, a_plan::text, '{"size": 1000, "mimetype": "image/jpeg"}');
+    INSERT INTO public.evidencias (material_id, tipo, url) VALUES (m_ajeno, 'ENLACE', 'https://ejemplo.com/ajena') RETURNING id INTO ev_ajena;
+    INSERT INTO public.evidencias (material_id, tipo, url, subido_por) VALUES (m_propio, 'ENLACE', 'https://ejemplo.com/de-otro', u_plan) RETURNING id INTO ev_de_otro;
+
+    -- PROVEEDOR ---------------------------------------------------------------
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_prov, 'role', 'authenticated')::text, true);
+    SET LOCAL ROLE authenticated;
+
+    ruta_propia := v_efect || '/' || m_propio || '/prueba.jpg';
+    BEGIN
+        INSERT INTO storage.objects (bucket_id, name, owner_id, metadata)
+        VALUES ('evidencias', ruta_propia, a_prov::text, '{"size": 150000, "mimetype": "image/jpeg"}');
+        r := r || text 'OK     PROVEEDOR sube a su carpeta, en material suyo';
+    EXCEPTION WHEN others THEN
+        r := r || format('FALLA  PROVEEDOR sube a su carpeta, en material suyo: %s', SQLERRM);
+    END;
+    BEGIN
+        INSERT INTO public.evidencias (material_id, tipo, ruta_storage, tamano_bytes, nombre_archivo)
+        VALUES (m_propio, 'FOTO', ruta_propia, 1, 'prueba.jpg') RETURNING * INTO e;
+        ev_propia := e.id;
+        r := r || format('%s  registra la FOTO: tamaño real %s bytes (no el 1 que mandó), subido_por suyo',
+                         CASE WHEN e.tamano_bytes = 150000 AND e.subido_por = u_prov THEN 'OK   ' ELSE 'FALLA' END, e.tamano_bytes);
+    EXCEPTION WHEN others THEN
+        r := r || format('FALLA  registra la FOTO: %s', SQLERRM);
+    END;
+    BEGIN
+        INSERT INTO public.evidencias (material_id, tipo, url) VALUES (m_propio, 'ENLACE', 'https://drive.google.com/file/d/prueba123456/view');
+        r := r || text 'OK     registra un ENLACE https en material suyo';
+    EXCEPTION WHEN others THEN
+        r := r || format('FALLA  registra un ENLACE https en material suyo: %s', SQLERRM);
+    END;
+    BEGIN
+        INSERT INTO public.evidencias (material_id, tipo, url) VALUES (m_propio, 'ENLACE', 'http://ejemplo.com/foto.jpg');
+        r := r || text 'FALLA  ENLACE http:// (sin s): lo aceptó';
+    EXCEPTION WHEN invalid_parameter_value THEN
+        r := r || format('OK     ENLACE http:// (sin s): %s', SQLERRM);
+    END;
+    BEGIN
+        INSERT INTO public.evidencias (material_id, tipo, url) VALUES (m_propio, 'ENLACE', 'javascript:alert(1)');
+        r := r || text 'FALLA  ENLACE que no es enlace: lo aceptó';
+    EXCEPTION WHEN invalid_parameter_value THEN
+        r := r || text 'OK     ENLACE que no es enlace: rechazado';
+    END;
+    BEGIN
+        INSERT INTO public.evidencias (material_id, tipo, url) VALUES (m_ajeno, 'ENLACE', 'https://ejemplo.com/x');
+        r := r || text 'FALLA  evidencia en material ajeno: la aceptó';
+    EXCEPTION WHEN insufficient_privilege THEN
+        r := r || text 'OK     evidencia en material ajeno: rechazada por RLS';
+    END;
+    BEGIN
+        INSERT INTO storage.objects (bucket_id, name, owner_id, metadata)
+        VALUES ('evidencias', v_otro_prov || '/' || m_ajeno || '/intruso.jpg', a_prov::text, '{"size": 10, "mimetype": "image/jpeg"}');
+        r := r || text 'FALLA  subir a la carpeta de otro proveedor: lo aceptó';
+    EXCEPTION WHEN insufficient_privilege THEN
+        r := r || text 'OK     subir a la carpeta de otro proveedor: rechazado';
+    END;
+    BEGIN
+        INSERT INTO storage.objects (bucket_id, name, owner_id, metadata)
+        VALUES ('evidencias', v_efect || '/' || m_ajeno || '/intruso.jpg', a_prov::text, '{"size": 10, "mimetype": "image/jpeg"}');
+        r := r || text 'FALLA  subir a su carpeta pero en material ajeno: lo aceptó';
+    EXCEPTION WHEN insufficient_privilege THEN
+        r := r || text 'OK     subir a su carpeta pero en material ajeno: rechazado';
+    END;
+    BEGIN
+        INSERT INTO storage.objects (bucket_id, name, owner_id, metadata)
+        VALUES ('evidencias', v_efect || '/' || m_propio || '/sub/../x.jpg', a_prov::text, '{"size": 10, "mimetype": "image/jpeg"}');
+        r := r || text 'FALLA  ruta con carpetas de más: la aceptó';
+    EXCEPTION WHEN insufficient_privilege THEN
+        r := r || text 'OK     ruta con carpetas de más: rechazada';
+    END;
+    BEGIN
+        INSERT INTO storage.objects (bucket_id, name, owner_id, metadata)
+        VALUES ('evidencias', v_efect || '/' || m_propio || '/grande.jpg', a_prov::text, '{"size": 3145728, "mimetype": "image/jpeg"}');
+        INSERT INTO public.evidencias (material_id, tipo, ruta_storage, tamano_bytes)
+        VALUES (m_propio, 'FOTO', v_efect || '/' || m_propio || '/grande.jpg', 1);
+        r := r || text 'FALLA  FOTO de 3 MB: la aceptó';
+    EXCEPTION WHEN invalid_parameter_value THEN
+        r := r || format('OK     FOTO de 3 MB: %s', SQLERRM);
+    END;
+    BEGIN
+        INSERT INTO public.evidencias (material_id, tipo, ruta_storage, tamano_bytes)
+        VALUES (m_ajeno, 'FOTO', ruta_ajena, 1);
+        r := r || text 'FALLA  registrar como suyo el archivo de otro: lo aceptó';
+    EXCEPTION WHEN insufficient_privilege OR invalid_parameter_value THEN
+        r := r || format('OK     registrar como suyo el archivo de otro: %s', SQLERRM);
+    END;
+
+    SELECT count(*) INTO n FROM public.evidencias WHERE id = ev_ajena;
+    SELECT count(*) INTO n2 FROM storage.objects WHERE bucket_id = 'evidencias' AND name = ruta_ajena;
+    r := r || format('%s  no lee la evidencia ajena (%s) ni el archivo ajeno (%s)', CASE WHEN n = 0 AND n2 = 0 THEN 'OK   ' ELSE 'FALLA' END, n, n2);
+    SELECT count(*) INTO n FROM public.evidencias WHERE material_id = m_propio;
+    r := r || format('%s  lee las evidencias de su material: %s (foto, enlace y la de otra persona)', CASE WHEN n = 3 THEN 'OK   ' ELSE 'FALLA' END, n);
+
+    DELETE FROM public.evidencias WHERE id = ev_ajena;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    DELETE FROM public.evidencias WHERE id = ev_de_otro;
+    GET DIAGNOSTICS n2 = ROW_COUNT;
+    r := r || format('%s  no borra la evidencia ajena (%s) ni la que subió otra persona en su material (%s)', CASE WHEN n = 0 AND n2 = 0 THEN 'OK   ' ELSE 'FALLA' END, n, n2);
+    BEGIN
+        UPDATE public.evidencias SET url = 'https://ejemplo.com/cambiada' WHERE id = ev_de_otro;
+        r := r || text 'FALLA  UPDATE de evidencias: lo aceptó';
+    EXCEPTION WHEN insufficient_privilege THEN
+        r := r || text 'OK     UPDATE de evidencias: sin permiso (nadie actualiza)';
+    END;
+    UPDATE storage.objects SET metadata = '{"size": 1}' WHERE bucket_id = 'evidencias' AND name = ruta_propia;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    r := r || format('%s  UPDATE de su archivo en el bucket: %s filas (nadie actualiza)', CASE WHEN n = 0 THEN 'OK   ' ELSE 'FALLA' END, n);
+
+    -- Borrado directo en storage.objects: la API de Storage activa este permiso.
+    PERFORM set_config('storage.allow_delete_query', 'true', true);
+    DELETE FROM storage.objects WHERE bucket_id = 'evidencias' AND name = ruta_ajena;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    r := r || format('%s  no borra el archivo ajeno del bucket (%s filas)', CASE WHEN n = 0 THEN 'OK   ' ELSE 'FALLA' END, n);
+    -- Mismo orden que el portal: archivo primero, fila después.
+    DELETE FROM storage.objects WHERE bucket_id = 'evidencias' AND name = ruta_propia;
+    GET DIAGNOSTICS n2 = ROW_COUNT;
+    DELETE FROM public.evidencias WHERE id = ev_propia;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    r := r || format('%s  borra su archivo (%s) y después su evidencia (%s)', CASE WHEN n = 1 AND n2 = 1 THEN 'OK   ' ELSE 'FALLA' END, n2, n);
+    PERFORM set_config('storage.allow_delete_query', 'false', true);
+    SELECT public.fn_uso_storage() IS NULL INTO STRICT x;
+    SELECT count(*) INTO n FROM public.fn_evidencias_huerfanas();
+    r := r || format('%s  fn_uso_storage() para un externo: nulo; fn_evidencias_huerfanas(): %s filas', CASE WHEN x = 'true' AND n = 0 THEN 'OK   ' ELSE 'FALLA' END, n);
+    RESET ROLE;
+
+    SELECT count(*) INTO n FROM public.auditoria
+    WHERE tabla = 'evidencias' AND usuario_id = u_prov AND campo IN ('(alta)', '(baja)');
+    r := r || format('%s  auditoria de evidencias: %s filas (altas y baja del proveedor)', CASE WHEN n = 3 THEN 'OK   ' ELSE 'FALLA' END, n);
+
+    -- AGENCIA -----------------------------------------------------------------
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_ag, 'role', 'authenticated')::text, true);
+    SET LOCAL ROLE authenticated;
+    BEGIN
+        INSERT INTO public.evidencias (material_id, tipo, url) VALUES (m_propio, 'ENLACE', 'https://ejemplo.com/agencia');
+        r := r || text 'FALLA  AGENCIA inserta evidencia: la aceptó';
+    EXCEPTION WHEN insufficient_privilege THEN
+        r := r || text 'OK     AGENCIA inserta evidencia: rechazada';
+    END;
+    BEGIN
+        INSERT INTO storage.objects (bucket_id, name, owner_id, metadata)
+        VALUES ('evidencias', v_efect || '/' || m_propio || '/agencia.jpg', a_ag::text, '{"size": 10, "mimetype": "image/jpeg"}');
+        r := r || text 'FALLA  AGENCIA sube al bucket: lo aceptó';
+    EXCEPTION WHEN insufficient_privilege THEN
+        r := r || text 'OK     AGENCIA sube al bucket: rechazado';
+    END;
+    SELECT count(*) INTO n FROM public.evidencias WHERE id IN (ev_ajena, ev_de_otro);
+    SELECT count(*) INTO n2 FROM storage.objects WHERE bucket_id = 'evidencias' AND name = ruta_ajena;
+    r := r || format('%s  AGENCIA lee evidencias (%s) y archivos (%s) de MCO', CASE WHEN n = 2 AND n2 = 1 THEN 'OK   ' ELSE 'FALLA' END, n, n2);
+    DELETE FROM public.evidencias WHERE id = ev_ajena;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    r := r || format('%s  AGENCIA no borra evidencias (%s filas)', CASE WHEN n = 0 THEN 'OK   ' ELSE 'FALLA' END, n);
+    RESET ROLE;
+
+    -- Internos ------------------------------------------------------------------
+    -- Lo esperado, como postgres: todo lo que ocupa el bucket, con huérfanos.
+    SELECT coalesce(sum((metadata ->> 'size')::bigint), 0) INTO n2 FROM storage.objects WHERE bucket_id = 'evidencias';
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_plan, 'role', 'authenticated')::text, true);
+    SET LOCAL ROLE authenticated;
+    SELECT count(*) INTO n FROM public.evidencias WHERE id IN (ev_ajena, ev_de_otro);
+    r := r || format('%s  PLANNING lee las evidencias de MCO (%s)', CASE WHEN n = 2 THEN 'OK   ' ELSE 'FALLA' END, n);
+    SELECT public.fn_uso_storage() INTO k;
+    r := r || format('%s  fn_uso_storage() = %s bytes: el tamaño real del bucket, con el archivo huérfano (esperado %s)',
+                     CASE WHEN k = n2 AND k >= 1000 THEN 'OK   ' ELSE 'FALLA' END, k, n2);
+    SELECT count(*) INTO n FROM public.fn_evidencias_huerfanas() WHERE ruta = ruta_ajena;
+    r := r || format('%s  fn_evidencias_huerfanas() detecta el archivo sin fila en evidencias', CASE WHEN n = 1 THEN 'OK   ' ELSE 'FALLA' END);
+    BEGIN
+        INSERT INTO public.evidencias (material_id, tipo, url) VALUES (m_propio, 'ENLACE', 'https://ejemplo.com/planning');
+        r := r || text 'FALLA  PLANNING inserta evidencia: la aceptó';
+    EXCEPTION WHEN insufficient_privilege THEN
+        r := r || text 'OK     PLANNING inserta evidencia: rechazada (las sube el proveedor)';
+    END;
+    DELETE FROM public.evidencias WHERE id = ev_ajena;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    r := r || format('%s  PLANNING no borra evidencias (%s filas)', CASE WHEN n = 0 THEN 'OK   ' ELSE 'FALLA' END, n);
+    RESET ROLE;
+
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_adm, 'role', 'authenticated')::text, true);
+    SET LOCAL ROLE authenticated;
+    DELETE FROM public.evidencias WHERE id = ev_ajena;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    r := r || format('%s  ADMIN borra cualquier evidencia (%s fila)', CASE WHEN n = 1 THEN 'OK   ' ELSE 'FALLA' END, n);
+    RESET ROLE;
 
     -- ============================================================== Internos
     PERFORM set_config('request.jwt.claims', json_build_object('sub', a_plan, 'role', 'authenticated')::text, true);
@@ -312,7 +510,7 @@ BEGIN
     SELECT count(*) INTO n FROM public.auditoria;
     r := r || format('%s  PLANNING no lee auditoria: %s filas', CASE WHEN n = 0 THEN 'OK   ' ELSE 'FALLA' END, n);
     BEGIN
-        PERFORM public.fn_reportar_implementacion(m_propio, 'x', NULL);
+        PERFORM public.fn_reportar_implementacion(m_propio, 'x');
         r := r || text 'FALLA  fn_reportar_implementacion como PLANNING: la aceptó';
     EXCEPTION WHEN insufficient_privilege THEN
         r := r || text 'OK     fn_reportar_implementacion como PLANNING: rechazada (edita en Materiales)';

@@ -22,6 +22,11 @@ const CLASE_CONFIANZA = { ALTA: 'ok', MEDIA: 'prop', BAJA: 'err' };
 const ORDEN_CONFIANZA = { ALTA: 0, MEDIA: 1, BAJA: 2 };
 const INVISIBLES = /[\u200b-\u200d\ufeff]/;
 
+// Cuota de Storage del plan gratis de Supabase (evidencias). Ver CLAUDE.md.
+const CUOTA_STORAGE = 1024 * 1024 * 1024;     // 1 GB
+const AVISO_STORAGE = 700 * 1024 * 1024;      // avisar desde 700 MB
+const GRACIA_HUERFANO = 10 * 60 * 1000;       // una subida en curso deja el archivo antes que la fila
+
 // Mensaje legible de un error de la Edge Function o de un RPC.
 async function mensajeDe(error) {
   if (!error) return 'Error desconocido';
@@ -41,6 +46,8 @@ async function iniciar() {
       usuario,
       cargando: true,
       errorCarga: '',
+      usoStorage: null,         // bytes del bucket evidencias (fn_uso_storage)
+      huerfanas: [],            // archivos del bucket sin fila en evidencias
       mercados: [],
       misMercadoIds: [],
       alertas: [],
@@ -90,6 +97,30 @@ async function iniciar() {
           .filter(d => !id || d.mercado_id === id)
           .sort((a, b) => (a.tipo === b.tipo ? 0 : a.tipo === 'PROVEEDOR' ? -1 : 1)
             || ORDEN_CONFIANZA[a.confianza] - ORDEN_CONFIANZA[b.confianza] || a.id - b.id);
+      },
+      // Es de todo el proyecto, no de un mercado: no depende del filtro.
+      alertaStorage() {
+        if (this.usoStorage === null || this.usoStorage < AVISO_STORAGE) return null;
+        const pct = Math.floor((this.usoStorage / CUOTA_STORAGE) * 100);
+        return {
+          texto: `Almacenamiento de evidencias al ${pct} % del plan gratis`,
+          detalle: `${(this.usoStorage / 1024 / 1024).toLocaleString('es-CO', { maximumFractionDigits: 0 })} MB de 1.024 MB. `
+            + 'Al llegar al tope, Storage deja de aceptar archivos: pasar al plan Pro o depurar videos.',
+          clase: pct >= 90 ? 'error' : 'aviso',
+        };
+      },
+      alertaHuerfanas() {
+        const viejas = this.huerfanas.filter(h => Date.now() - new Date(h.subido_en).getTime() > GRACIA_HUERFANO);
+        if (!viejas.length) return null;
+        const bytes = viejas.reduce((s, h) => s + Number(h.tamano_bytes || 0), 0);
+        const n = viejas.length;
+        return {
+          texto: `${n} ${n === 1 ? 'archivo' : 'archivos'} en el bucket sin fila en evidencias`,
+          detalle: `Ocupan ${(bytes / 1024 / 1024).toLocaleString('es-CO', { maximumFractionDigits: 1 })} MB de la cuota y nadie los ve. `
+            + 'Un ADMIN los borra en Supabase → Storage → evidencias.',
+          rutas: viejas.slice(0, 5).map(h => h.ruta),
+          mas: Math.max(0, n - 5),
+        };
       },
       total() { return this.grupos.reduce((s, g) => s + g.casos.length, 0); },
     },
@@ -193,15 +224,21 @@ async function iniciar() {
 
       async cargar() {
         try {
-          const [mercados, mis, propios, alertas, compras] = await Promise.all([
+          const [mercados, mis, propios, alertas, compras, uso, huerfanas] = await Promise.all([
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre').order('id')),
             sb.rpc('fn_mis_mercados'),
             traerTodo(() => sb.from('usuario_mercados').select('mercado_id').eq('usuario_id', this.usuario.id).order('mercado_id')),
             traerTodo(() => sb.from('v_alertas').select('alerta, referencia, mercado, compra_id, material_id')
               .order('alerta').order('mercado').order('referencia')),
             traerTodo(() => sb.from('compras').select('id, ubicacion').order('id')),
+            sb.rpc('fn_uso_storage'),
+            sb.rpc('fn_evidencias_huerfanas'),
           ]);
           if (mis.error) throw mis.error;
+          if (uso.error) console.error('No se pudo leer el uso de Storage', uso.error);
+          else this.usoStorage = Number(uso.data);
+          if (huerfanas.error) console.error('No se pudo revisar el bucket', huerfanas.error);
+          else this.huerfanas = huerfanas.data || [];
           this.mercados = mercados;
           this.misMercadoIds = (mis.data || []).map(x => (typeof x === 'object' ? Object.values(x)[0] : x)).map(Number);
           this.alertas = alertas;

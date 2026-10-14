@@ -18,6 +18,16 @@
     <h1 class="titulo">Alertas</h1>
 
     <div v-if="errorCarga" class="alerta error" style="margin-bottom:14px">{{ errorCarga }}</div>
+    <div v-if="alertaStorage" class="alerta" :class="alertaStorage.clase" style="margin-bottom:14px" role="status">
+      <strong>{{ alertaStorage.texto }}.</strong> {{ alertaStorage.detalle }}
+    </div>
+    <div v-if="alertaHuerfanas" class="alerta aviso" style="margin-bottom:14px" role="status">
+      <strong>{{ alertaHuerfanas.texto }}.</strong> {{ alertaHuerfanas.detalle }}
+      <div class="mono" style="margin-top:6px;font-size:11px">
+        <div v-for="r in alertaHuerfanas.rutas" :key="r">{{ r }}</div>
+        <div v-if="alertaHuerfanas.mas">y {{ alertaHuerfanas.mas }} más</div>
+      </div>
+    </div>
 
     <div class="filtros filtros-sueltos filtros-alertas">
       <div class="campo">

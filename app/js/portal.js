@@ -4,41 +4,28 @@
 // (código, proveedor, formato, ubicación, ciudad, tipo de costo). El calendario
 // no carga costos.
 // Escritura solo por funciones de la base, cada una con sus campos:
-//   PROVEEDOR -> fn_reportar_implementacion (reporte y evidencia)
-//   AGENCIA   -> fn_actualizar_enlace (enlace)
+//   PROVEEDOR -> fn_reportar_implementacion (reporte) y sus evidencias
+//                (fotos, videos y enlaces, en el panel de evidencias.js)
+//   AGENCIA   -> fn_actualizar_enlace (enlace); ve las evidencias sin tocarlas
+// materiales.evidencia_url ya no se usa: las evidencias van en su tabla.
 // La pantalla solo ofrece esos campos; lo que de verdad lo impide es la base.
 
 const COLUMNAS_PORTAL = [
   'id', 'codigo', 'sub_campana', 'referencia', 'fecha_inicio', 'fecha_fin', 'enlace',
-  'reporte_implementacion', 'evidencia_url', 'compra', 'proveedor', 'formato',
+  'reporte_implementacion', 'compra', 'proveedor', 'formato',
   'ubicacion', 'ciudad', 'tipo_costo',
 ].join(', ');
 
 const EDITABLES_POR_ROL = {
-  PROVEEDOR: ['reporte_implementacion', 'evidencia_url'],
+  PROVEEDOR: ['reporte_implementacion'],
   AGENCIA:   ['enlace'],
 };
 
 const SIN_SUB_P = '';  // opción "Sin sub campaña" del filtro
 const DIAS_SEM = ['D', 'L', 'M', 'M', 'J', 'V', 'S'];
 
-// Igual que fn_es_url en la base: https, con dominio, sin espacios.
-const RE_URL = /^https:\/\/[^\s/?#]+\.[^\s/?#]+([/?#]\S*)?$/i;
-const esUrl = (s) => !!s && RE_URL.test(s) && s.length <= 2000;
 
 const textoONuloP = (s) => { const t = (s || '').trim(); return t === '' ? null : t; };
-
-// ¿El enlace responde? El navegador no deja leer la respuesta de otro sitio
-// (CORS), así que esto solo distingue «el servidor contestó» de «no existe o no
-// se pudo conectar». No sabe si un archivo de Drive está compartido.
-async function enlaceResponde(url) {
-  try {
-    await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: AbortSignal.timeout(8000) });
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, motivo: e.name === 'TimeoutError' ? 'El enlace no respondió en 8 s' : 'No se pudo abrir el enlace' };
-  }
-}
 
 let contadorPortal = 0;
 
@@ -48,7 +35,6 @@ function desdeBasePortal(m) {
     _k: ++contadorPortal,
     enlace: m.enlace || '',
     reporte_implementacion: m.reporte_implementacion || '',
-    evidencia_url: m.evidencia_url || '',
     _guardando: false,
     _repetir: false,
     _estado: null,
@@ -56,7 +42,6 @@ function desdeBasePortal(m) {
   r._orig = {
     enlace: textoONuloP(r.enlace),
     reporte_implementacion: textoONuloP(r.reporte_implementacion),
-    evidencia_url: textoONuloP(r.evidencia_url),
   };
   return r;
 }
@@ -92,10 +77,12 @@ async function iniciar() {
   const usuario = await requerirAccesoExterno();
   const esProveedor = usuario.rol === 'PROVEEDOR';
 
-  let materiales = [], errorCarga = '';
+  let materiales = [], evidencias = [], errorCarga = '';
   try {
-    materiales = await traerTodo(() => sb.from('v_materiales_externos').select(COLUMNAS_PORTAL)
-      .order('compra').order('codigo'));
+    [materiales, evidencias] = await Promise.all([
+      traerTodo(() => sb.from('v_materiales_externos').select(COLUMNAS_PORTAL).order('compra').order('codigo')),
+      cargarEvidencias(),
+    ]);
     if (!materiales.length) {
       errorCarga = esProveedor
         ? 'Todavía no hay materiales en compras de tu proveedor.'
@@ -111,7 +98,7 @@ async function iniciar() {
   pintarBarraPortal(document.getElementById('barra'), usuario, cuenta);
 
   createApp({
-    components: { SeleccionMultiple },
+    components: { SeleccionMultiple, PanelEvidencias },
 
     data: () => ({
       usuario,
@@ -121,6 +108,8 @@ async function iniciar() {
       cargando: false,
       errorCarga,
       filas: materiales.map(desdeBasePortal),
+      evidencias,
+      panelEv: null,           // material con el panel de evidencias abierto
       filtros: { meses: [], subCampanas: [] },
       vista: 'tabla',
       calMes: '',
@@ -128,6 +117,15 @@ async function iniciar() {
     }),
 
     computed: {
+      evidenciasPorMaterial() {
+        const m = new Map();
+        for (const e of this.evidencias) {
+          if (!m.has(e.material_id)) m.set(e.material_id, []);
+          m.get(e.material_id).push(e);
+        }
+        return m;
+      },
+
       eyebrow() { return this.esProveedor ? `${this.cuenta} · Proveedor` : 'Agencia'; },
       ayuda() {
         return this.esProveedor
@@ -177,7 +175,7 @@ async function iniciar() {
         let sinReporte = 0, sinEvidencia = 0, sinEnlace = 0;
         for (const r of this.visibles) {
           if (!r._orig.reporte_implementacion) sinReporte++;
-          if (!r._orig.evidencia_url) sinEvidencia++;
+          if (!this.cuentaEvidencias(r)) sinEvidencia++;
           if (!r._orig.enlace) sinEnlace++;
         }
         return { total: this.visibles.length, sinReporte, sinEvidencia, sinEnlace };
@@ -258,8 +256,6 @@ async function iniciar() {
       validarFila(r) {
         const e = {};
         if (this.esProveedor) {
-          const url = textoONuloP(r.evidencia_url);
-          if (url && !esUrl(url)) e.evidencia_url = 'Tiene que ser un enlace que empiece por https://';
           if ((r.reporte_implementacion || '').length > 2000) e.reporte_implementacion = 'Máximo 2.000 caracteres';
         } else {
           const url = textoONuloP(r.enlace);
@@ -307,21 +303,13 @@ async function iniciar() {
         r._guardando = true;
         let error = null, data = null;
         try {
+          r._estado = { clase: 'prop', texto: 'guardando…' };
           if (this.esProveedor) {
-            // La evidencia nueva se comprueba antes de guardarla.
-            if (cambios.evidencia_url) {
-              r._estado = { clase: 'prop', texto: 'comprobando enlace…' };
-              const prueba = await enlaceResponde(cambios.evidencia_url);
-              if (!prueba.ok) throw { code: 'enlace', message: prueba.motivo };
-            }
-            r._estado = { clase: 'prop', texto: 'guardando…' };
             ({ data, error } = await sb.rpc('fn_reportar_implementacion', {
               p_material_id: r.id,
               p_reporte: textoONuloP(r.reporte_implementacion),
-              p_evidencia_url: textoONuloP(r.evidencia_url),
             }));
           } else {
-            r._estado = { clase: 'prop', texto: 'guardando…' };
             ({ data, error } = await sb.rpc('fn_actualizar_enlace', {
               p_material_id: r.id,
               p_enlace: textoONuloP(r.enlace),
@@ -333,7 +321,7 @@ async function iniciar() {
 
         r._guardando = false;
         if (error) {
-          r._estado = { clase: 'err', texto: error.code === 'enlace' ? 'enlace no abre' : 'error', detalle: mensajeErrorPortal(error) };
+          r._estado = { clase: 'err', texto: 'error', detalle: mensajeErrorPortal(error) };
           console.error('No se guardó el material', r.codigo, error);
         } else {
           for (const k of this.editables) r._orig[k] = textoONuloP(data[k]);
@@ -366,7 +354,7 @@ async function iniciar() {
           ['Referencia', (r) => r.referencia],
           ['Enlace', (r) => r._orig.enlace],
           ['Reporte de implementación', (r) => r._orig.reporte_implementacion],
-          ['Evidencia', (r) => r._orig.evidencia_url],
+          ['Evidencias', (r) => this.cuentaEvidencias(r)],
           ['Fecha inicio', (r) => r.fecha_inicio],
           ['Fecha fin', (r) => r.fecha_fin],
         ];
@@ -415,6 +403,13 @@ async function iniciar() {
         };
       },
       ocultarGlobo() { this.globo = null; },
+
+      // ---------------------------------------------------------------- Evidencias
+
+      cuentaEvidencias(r) { return (this.evidenciasPorMaterial.get(r.id) || []).length; },
+      abrirEvidencias(r) { this.panelEv = r; },
+      alAgregarEvidencia(e) { this.evidencias = [...this.evidencias, e]; },
+      alBorrarEvidencia(id) { this.evidencias = this.evidencias.filter(e => e.id !== id); },
     },
 
     mounted() {
