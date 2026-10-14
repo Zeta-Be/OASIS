@@ -8,3 +8,7 @@ project_id = "tjlteqhqctdtlbppigdi"
 verify_jwt = false
 # El prompt viaja con la función y se lee en cada llamada.
 static_files = ["./functions/detectar-duplicados/prompt.md"]
+
+[functions.gestionar-usuarios]
+# Igual que detectar-duplicados: la sesión (y que sea ADMIN) se verifica dentro.
+verify_jwt = false

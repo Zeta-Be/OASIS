@@ -1,0 +1,36 @@
+/* Usuarios: lo que no comparte con las demás tablas. Fuente de verdad: DISENO.md */
+
+.card-cab .acciones-cab { margin-left: auto; display: flex; gap: 10px; }
+
+.filtros.filtros-usuarios { grid-template-columns: minmax(200px, 320px) repeat(2, minmax(140px, 200px)); }
+@media (max-width: 760px) {
+  .filtros.filtros-usuarios { grid-template-columns: 1fr; }
+}
+
+.tabla-usuarios td.correo { font-size: 11.5px; }
+.tabla-usuarios tr.inactivo td.calc { color: var(--muted); }
+.tabla-usuarios td .pill { margin-left: 6px; }
+.tabla-usuarios td .pill:first-child { margin-left: 0; }
+
+.acciones-fila { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.acciones-fila .pregunta { font-size: 11.5px; color: var(--ink-soft); }
+.mini.peligro { color: var(--err); border-color: var(--err); }
+
+.panel-cuerpo .campo label .opcional {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+/* La contraseña temporal: grande, en monoespaciada, para dictarla o copiarla */
+.clave-cuerpo { padding-top: 6px; }
+.clave-caja {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--k);
+  background: var(--y-wash);
+  padding: 12px 14px;
+}
+.clave-caja .clave { flex: 1; font-size: 22px; letter-spacing: 0.08em; user-select: all; }

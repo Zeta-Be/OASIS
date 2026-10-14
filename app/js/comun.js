@@ -18,7 +18,7 @@ async function usuarioActual() {
 
   const { data, error } = await sb
     .from('usuarios')
-    .select('id, correo, nombre, rol, activo, proveedor_id')
+    .select('id, correo, nombre, rol, activo, proveedor_id, debe_cambiar_clave')
     .eq('auth_user_id', session.user.id)
     .maybeSingle();
 
@@ -29,8 +29,9 @@ async function usuarioActual() {
 }
 
 // Adónde va cada rol al entrar. Es solo comodidad: lo que protege los datos es
-// RLS, no esta redirección.
+// RLS, no esta redirección. Con contraseña temporal, primero a cambiarla.
 function paginaDeInicio(usuario) {
+  if (usuario.debe_cambiar_clave) return 'clave.html';
   return esExterno(usuario) ? 'portal.html' : 'compras.html';
 }
 
@@ -40,11 +41,11 @@ function irA(pagina) {
 }
 
 // Para páginas internas: sin sesión o sin acceso, vuelve al login; un externo
-// va al portal.
+// va al portal; con contraseña temporal, a cambiarla.
 async function requerirAcceso() {
   const { session, usuario } = await usuarioActual();
   if (!session || !usuario) return irA('index.html');
-  if (esExterno(usuario)) return irA('portal.html');
+  if (usuario.debe_cambiar_clave || esExterno(usuario)) return irA(paginaDeInicio(usuario));
   return usuario;
 }
 
@@ -52,7 +53,7 @@ async function requerirAcceso() {
 async function requerirAccesoExterno() {
   const { session, usuario } = await usuarioActual();
   if (!session || !usuario) return irA('index.html');
-  if (!esExterno(usuario)) return irA(paginaDeInicio(usuario));
+  if (usuario.debe_cambiar_clave || !esExterno(usuario)) return irA(paginaDeInicio(usuario));
   return usuario;
 }
 
@@ -66,10 +67,11 @@ const NAVEGACION = [
   { clave: 'materiales', texto: 'Materiales', href: 'materiales.html' },
   { clave: 'inversion',  texto: 'Inversión',  href: 'inversion.html' },
   { clave: 'alertas',    texto: 'Alertas',    href: 'alertas.html' },
+  { clave: 'usuarios',   texto: 'Usuarios',   href: 'usuarios.html', solo: 'ADMIN' },
 ];
 
 function pintarBarra(contenedor, usuario, activa) {
-  const nav = NAVEGACION.map(n => {
+  const nav = NAVEGACION.filter(n => !n.solo || n.solo === usuario.rol).map(n => {
     const clase = n.clave === activa ? ' class="activo"' : '';
     const cuenta = n.clave === 'alertas' ? '<span class="cuenta-alertas mono"></span>' : '';
     return `<a href="${n.href}"${clase}>${n.texto}${cuenta}</a>`;

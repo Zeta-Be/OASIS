@@ -18,11 +18,13 @@ El objetivo del sistema es saber cuánta plata corresponde a cada material, día
 | Base de datos | Supabase, proyecto `tjlteqhqctdtlbppigdi` (Postgres), conectado por MCP en modo lectura |
 | Esquema original | `oasis_v2_esquema.sql` (vocabulario viejo; ver `migracion_vocabulario.sql`) |
 | Carga desde Sheets | `cargar_oasis.py` — lee el Sheets en vivo y hace upsert |
+| Contraseña olvidada de un ADMIN | `cambiar_clave.py` — la cambia directo en Auth por la conexión de `.env` (ver «Alta de usuarios») |
 | Credenciales Google | `credenciales_google.json` — cuenta de servicio, nunca al repositorio |
 | Credenciales Postgres | `.env` — nunca al repositorio |
 | Autenticación y RLS | `rls_fase2.sql` — funciones de identidad, políticas, trigger de vínculo |
 | Sistema de diseño | `DISENO.md` — tokens, tipografía, componentes y pantallas de la interfaz |
-| Interfaz interna | `app/` — sitio estático; login con correo y contraseña. El código de 6 dígitos por correo se ve como «próximamente» hasta tener correo propio (ver Login). Cuatro pantallas: Compras, Materiales, Inversión, Alertas. Con rol LECTURA, Compras y Materiales se muestran como texto, sin edición |
+| Interfaz interna | `app/` — sitio estático; login con correo y contraseña. El código de 6 dígitos por correo se ve como «próximamente» hasta tener correo propio (ver Login). Cuatro pantallas: Compras, Materiales, Inversión, Alertas, más Usuarios (solo ADMIN) y `clave.html` (cambio obligatorio de la contraseña temporal). Con rol LECTURA, Compras y Materiales se muestran como texto, sin edición |
+| Gestión de usuarios | `sql/usuarios.sql` (funciones `fn_admin_*`, `debe_cambiar_clave`), Edge Function `supabase/functions/gestionar-usuarios/`, pantalla `app/usuarios.html`, prueba `supabase/probar_usuarios.py`. Ver «Alta de usuarios» |
 | Portal externo | `app/portal.html` (+ `js/portal.js`, `css/portal.css`) — PROVEEDOR y AGENCIA. El mismo login los manda ahí según el rol. Ver «Acceso externo» |
 | Acceso externo y auditoría | `sql/fase3_portal.sql` (`fn_mis_compras`, `v_materiales_externos`, políticas, funciones de escritura, `auditoria`); pruebas en `sql/fase3_portal_pruebas.sql` (se revierten solas) |
 | Evidencias | `sql/fase3_evidencias.sql` (tabla `evidencias`, bucket `evidencias`, políticas de Storage, `fn_uso_storage`); interfaz en `app/js/evidencias.js` y `app/css/evidencias.css`, la usan el portal y Materiales. Ver «Evidencias» |
@@ -82,12 +84,7 @@ Primera vez que entran usuarios de fuera de ZetaBé. La regla: **un externo no v
 - **Duplicados:** si se unifica un proveedor, sus compras pasan al proveedor canónico. Un usuario PROVEEDOR que apuntaba al proveedor absorbido deja de ver esas compras: hay que cambiar su `proveedor_id` al canónico.
 - **Pruebas:** después de tocar algo de esto, correr `sql/fase3_portal_pruebas.sql` en el SQL Editor. Crea usuarios de prueba (PROVEEDOR de EFECTIMEDIOS, AGENCIA de MCO, PLANNING, LECTURA, ADMIN), simula sus sesiones como la API y termina con un error a propósito que revierte todo; el informe sale en el mensaje del error, una línea OK o FALLA por prueba. Recorre todas las vistas de `public` salvo `v_materiales_externos`, así que una vista nueva queda cubierta sola. Tiene fijo que EFECTIMEDIOS ve 190 materiales (`ESPERADO_PROVEEDOR`): si el Sheets cambia los suyos, actualizarlo.
 
-**Alta de un proveedor** (en este orden):
-1. Su fila en `proveedores` si no existe (una por proveedor y mercado, con `grupo_id`). Ojo con los duplicados: usar el nombre que ya tienen sus compras.
-2. Su fila en `usuarios`: correo exacto, nombre, `rol = 'PROVEEDOR'`, `proveedor_id` = el id del paso 1. La base exige `proveedor_id` para PROVEEDOR y lo prohíbe para los demás roles. Va **antes** de crear el login, para que el trigger complete `auth_user_id`.
-3. El login: Supabase → Authentication → Users → Add user → Create new user, mismo correo, una contraseña, «Auto Confirm User» marcado. La contraseña se entrega por un canal privado.
-
-Un PROVEEDOR no lleva filas en `usuario_mercados`: su mercado sale del proveedor. Una **AGENCIA** se da de alta igual que un interno: fila en `usuarios` con `rol = 'AGENCIA'`, sus filas en `usuario_mercados` y el login.
+**Alta de un proveedor o una agencia:** en la pantalla Usuarios, como cualquier otro (ver «Alta de usuarios»). Al PROVEEDOR se le elige su proveedor (si no existe, primero su fila en `proveedores`, una por proveedor y mercado, con `grupo_id`; ojo con los duplicados: usar el nombre que ya tienen sus compras). No lleva `usuario_mercados`: su mercado sale del proveedor. La AGENCIA lleva sus mercados.
 
 ## Evidencias
 
@@ -103,6 +100,21 @@ El proveedor documenta la implementación de cada material con varias evidencias
 - **Regla del video por enlace:** un video de más de 50 MB no se sube. El portal dice «Comprime el video o compártelo por enlace». Para videos largos lo normal es un enlace de Drive o YouTube, no un archivo.
 - **Cuota del plan gratis de Supabase:** 1 GB de Storage en total y 50 MB por archivo. `fn_uso_storage()` suma el tamaño real de `storage.objects` del bucket, huérfanos incluidos (solo internos; a un externo le devuelve nulo). Desde 700 MB, Alertas muestra «Almacenamiento de evidencias al X % del plan gratis», en rojo desde el 90 %. **Al llegar al tope**, Storage deja de aceptar archivos. Hay dos salidas: pasar al plan Pro (100 GB incluidos; también sube el tope por archivo) o depurar, empezando por los videos, que son los más pesados. Para depurar: primero los huérfanos (Alertas), después `SELECT * FROM evidencias WHERE tipo = 'VIDEO' ORDER BY tamano_bytes DESC`. Un ADMIN borra el archivo en Supabase → Storage y luego la fila.
 - **Ancho de banda:** el plan gratis incluye 5 GB de transferencia al mes. Por eso las tablas muestran solo el número de evidencias; las miniaturas se cargan únicamente al abrir el panel de un material.
+
+## Alta de usuarios
+
+Desde la pantalla **Usuarios** (`usuarios.html`, solo ADMIN; el enlace aparece en la barra solo para ellos). Reemplaza el alta manual en tres pasos (fila en `usuarios`, filas en `usuario_mercados`, login en Supabase → Authentication).
+
+- **Nuevo usuario** (panel lateral): correo, nombre y rol, con estas etiquetas: Equipo ZB (ZB), Agencia, Proveedor, Lectura, Admin. Si es Proveedor, se elige el mercado y luego el proveedor (obligatorio). Para los demás roles, uno o varios mercados (obligatorio salvo Admin, que ve todos). PLANNING sigue en el enum por compatibilidad, pero no se ofrece y la base lo rechaza en altas nuevas.
+- Al crear, la base guarda la fila y sus mercados, Auth crea el login con una **contraseña temporal de 12 caracteres** (mayúscula, minúscula, número y símbolo; sin 0/O ni 1/l/I) y el usuario queda con `debe_cambiar_clave = true`. La contraseña se muestra **una sola vez**, con botón de copiar y el aviso «Envíala por un canal privado». No se guarda en ningún lado; si se pierde, se genera otra.
+- **Por fila:** Desactivar (pierde el acceso en el acto y su login queda bloqueado en Auth; un ADMIN no puede desactivarse a sí mismo), Reactivar y Nueva contraseña (otra temporal, con la misma marca). En usuarios antiguos que no tienen login, el botón dice «Crear login».
+- **Cambio obligatorio:** con `debe_cambiar_clave = true`, el login y todas las pantallas mandan a `clave.html` hasta que la persona elija su propia contraseña (mínimo 10 caracteres); al guardarla, `fn_clave_cambiada()` apaga la marca. La redirección es del navegador; quien conoce la temporal podría usar la API, pero también podría cambiarla, así que no se bloquea en la base.
+- **Cómo funciona:** `usuarios.html` llama a la Edge Function `gestionar-usuarios`. Esta verifica con el JWT que quien llama sea ADMIN activo (si no, responde 403) y usa dos clientes. Con la **llave secreta** hace solo lo de Auth: crear el login, bloquearlo o desbloquearlo, poner la contraseña. Con el **JWT del ADMIN** llama a las funciones de la base (`fn_admin_crear_usuario`, `fn_admin_cambiar_activo`, `fn_admin_marcar_clave_temporal`, `fn_admin_borrar_usuario_sin_login`), que vuelven a exigir ADMIN y validan: correo con formato válido y que no exista, proveedor obligatorio si el rol es Proveedor, al menos un mercado para los demás. Por eso **la auditoría registra al ADMIN que lo hizo**: alta, mercados, activo, contraseña temporal (en `auditoria`, tabla `usuarios`).
+- **Si Auth falla** al crear, la fila se deshace. Si falla al desactivar o reactivar, la base vuelve a como estaba. Si ya existe un login con ese correo sin usuario en OASIS, la función lo dice: hay que borrarlo en Authentication → Users.
+- **La llave secreta** va solo en Supabase → Edge Functions → Secrets, con el nombre `OASIS_SECRET_KEY` (una llave `sb_secret_…` de Settings → API Keys). Si no está, la función usa `SUPABASE_SERVICE_ROLE_KEY`, que Supabase pone solo. Nunca va en el repositorio ni en `app/`: `probar_usuarios.py` busca con `git grep` llaves `sb_secret_` y JWT de `service_role` en los archivos y en todo el historial.
+- **Desplegar:** `npx supabase functions deploy gestionar-usuarios --project-ref tjlteqhqctdtlbppigdi --use-api`. `verify_jwt` está apagado en `supabase/config.toml`: la sesión se verifica dentro de la función.
+- **Si un ADMIN olvida su contraseña** y no hay otro ADMIN que le genere una temporal: `source .env && python3 cambiar_clave.py correo@empresa.com`. Pide la contraseña nueva dos veces sin eco (mínimo 10 caracteres), la escribe en `auth.users` con `crypt(…, gen_salt('bf'))` por la conexión de `.env` y cierra las sesiones viejas de ese login. No marca `debe_cambiar_clave` y no imprime ni guarda la contraseña. Avisa si el login está bloqueado o el usuario inactivo: eso no lo arregla, lo hace un ADMIN en la pantalla. Sirve para cualquier login, pero para los demás lo normal es «Nueva contraseña» en la pantalla, que deja rastro en la auditoría; este script no lo deja.
+- **Probar:** `source .env && python3 supabase/probar_usuarios.py`. Crea un ADMIN temporal directo en la base (contraseña aleatoria que no se imprime). Recorre el flujo completo contra la función desplegada: validaciones, crear, entrar con la temporal, 403 a un no-ADMIN, nueva contraseña, desactivar, reactivar y cambio de contraseña. Revisa la auditoría y la llave, y al final borra los usuarios de prueba, sus logins y su auditoría, aunque algo falle.
 
 ## Detector de duplicados
 
@@ -174,12 +186,12 @@ El script localiza encabezados por nombre, no por posición. Si falta uno, se de
 - No modificar el Google Sheets. La carga es Sheets → Supabase, en una sola dirección.
 - No cambiar las reglas de reparto ni el contrato con BI sin confirmar con Nicolás.
 - Preferir cambios pequeños y verificables. Después de tocar vistas, correr `v_cuadre`.
-- No dar de alta a alguien en un solo paso. Son dos: (1) su fila en `usuarios` con el correo exacto, **antes** de su primer login, para que el trigger complete `auth_user_id`; si entra antes, el vínculo hay que hacerlo a mano. (2) Sus filas en `usuario_mercados`. Un PLANNING o ZB sin mercados entra, ve los catálogos, pero no ve ninguna compra ni material. ADMIN no necesita mercados: ve todos. **Mientras el login sea con contraseña, hay un tercer paso:** crear la cuenta en Supabase → Authentication → Users → Add user → Create new user, con el mismo correo, una contraseña y «Auto Confirm User» marcado. El trigger hace el vínculo al crearla, así que el paso (1) va antes. La contraseña se le entrega a la persona por un canal privado; si la olvida, un ADMIN la cambia ahí mismo (no hay «olvidé mi contraseña» sin correo propio).
+- No dar de alta usuarios a mano en Supabase: se hace en la pantalla Usuarios (ver «Alta de usuarios»), que crea la fila, los mercados y el login juntos y deja rastro en la auditoría. Si alguien olvida su contraseña, un ADMIN le genera otra temporal ahí mismo (no hay «olvidé mi contraseña» sin correo propio); si el que la olvidó es el ADMIN, `cambiar_clave.py`. Si algo obliga a hacerlo a mano, el orden importa: la fila en `usuarios` va **antes** de crear el login, para que el trigger complete `auth_user_id`.
 
 ## Login
 
 Dos métodos en `app/index.html`, los dos siempre visibles; el interruptor es `CODIGO_DISPONIBLE` en `app/js/login.js`.
-- **Hoy (`false`):** contraseña es la primera pestaña y la que abre. La pestaña «Código por correo» dice «próximamente» y solo muestra una nota. El piloto entra con contraseña.
+- **Hoy (`false`):** contraseña es la primera pestaña y la que abre. La pestaña «Código por correo» dice «próximamente» y solo muestra una nota. El piloto entra con contraseña. Quien entra con una contraseña temporal pasa primero por `clave.html` (ver «Alta de usuarios»).
 - **Con correo propio (`true`):** se configura SMTP propio en Supabase (Resend), se pega `supabase/plantilla_codigo.html` y se cambia a `true`. El código pasa a ser la primera pestaña y la principal; la contraseña queda como segunda opción.
 
 Se usa código y no enlace porque los escáneres del correo corporativo abren los enlaces antes que el usuario y los dejan vencidos.
@@ -193,7 +205,7 @@ Se usa código y no enlace porque los escáneres del correo corporativo abren lo
 **Fase 2 (completa):** interfaz interna para planning y ZB, construida con Claude Code siguiendo `DISENO.md`. Cuatro pantallas: Compras, Materiales, Inversión y Alertas. Consulta se eliminó: Materiales la absorbe (filtros, solo lectura para LECTURA y exportar a CSV). Inversión (gráficos de resumen y tablas total, semanal y diaria) y Alertas son de solo lectura para todos los roles; la única escritura es la fecha de corte (ADMIN). Los enlaces de Alertas abren Compras o Materiales con `?mercado=…&compra=…` o `&material=…` (y `&partir=1` para fuera de periodo). El último mercado elegido se recuerda en el navegador y la barra muestra el número de alertas de ese mercado.
 
 **Siguiente:**
-1. **Despliegue y piloto con usuarios internos.** Publicar `app/` como sitio estático, dar de alta a los usuarios del piloto (los dos pasos de abajo) y ajustar con lo que reporten. Los equipos siguen llenando el Sheets hasta que el piloto confirme el corte.
+1. **Despliegue y piloto con usuarios internos.** Publicar `app/` como sitio estático, dar de alta a los usuarios del piloto (pantalla Usuarios) y ajustar con lo que reporten. Los equipos siguen llenando el Sheets hasta que el piloto confirme el corte.
 2. **Fase 3: portal externo.** En la rama `feature/portal`: acceso externo, auditoría y `portal.html`. Falta piloto con un proveedor y una agencia.
 3. **Fase 4: BI.** Conexión directa de BI a las vistas, sin usuario en la app.
 
