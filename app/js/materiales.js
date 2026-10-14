@@ -75,7 +75,7 @@ async function iniciar() {
   pintarBarra(document.getElementById('barra'), usuario, 'materiales');
 
   createApp({
-    components: { SeleccionMultiple },
+    components: { SeleccionMultiple, PanelEvidencias },
 
     data: () => ({
       ENUMS,
@@ -97,6 +97,8 @@ async function iniciar() {
       globo: null,             // ayuda flotante: { x, y, lineas, img }
       resaltada: null,         // fila que pidió Alertas (_k)
       borrador: null,          // material nuevo, o partición, en el panel lateral
+      evidencias: [],          // de la tabla evidencias (las sube el proveedor)
+      panelEv: null,           // { id, codigo, ubicacion } con el panel de evidencias abierto
     }),
 
     computed: {
@@ -107,6 +109,14 @@ async function iniciar() {
       proveedoresPorId() { return new Map(this.proveedores.map(p => [p.id, p])); },
       comprasPorId() { return new Map(this.compras.map(c => [c.id, c])); },
       subPorId() { return new Map(this.subCampanas.map(s => [s.id, s])); },
+      evidenciasPorMaterial() {
+        const m = new Map();
+        for (const e of this.evidencias) {
+          if (!m.has(e.material_id)) m.set(e.material_id, []);
+          m.get(e.material_id).push(e);
+        }
+        return m;
+      },
 
       eyebrow() {
         const m = this.mercadosPorId.get(this.filtros.mercado);
@@ -358,6 +368,8 @@ async function iniciar() {
         return c ? `${c.codigo}-${letra(r.secuencia)}` : '';
       },
       miniatura,
+      cuentaEvidencias(r) { return (this.evidenciasPorMaterial.get(r.id) || []).length; },
+      abrirEvidencias(r) { this.panelEv = { id: r.id, codigo: this.codigoMaterial(r), ubicacion: this.compraDe(r).ubicacion }; },
 
       subCampanasDe(mercadoId, actual) {
         return this.subCampanas.filter(s => s.mercado_id === mercadoId && (s.activo || s.id === actual));
@@ -504,6 +516,7 @@ async function iniciar() {
           ['Referencia', (r) => r._orig.referencia],
           ['Enlace', (r) => r._orig.enlace],
           ['Reporte de implementación', (r) => r._orig.reporte_implementacion],
+          ['Evidencias', (r) => this.cuentaEvidencias(r)],
           ['Fecha inicio', (r) => r._orig.fecha_inicio],
           ['Fecha fin', (r) => r._orig.fecha_fin],
           ['Taxonomía', (r) => r.taxonomia],
@@ -765,7 +778,7 @@ async function iniciar() {
 
       async cargar() {
         try {
-          const [mercados, mis, propios, proveedores, subs, compras, materiales, taxonomias] = await Promise.all([
+          const [mercados, mis, propios, proveedores, subs, compras, materiales, taxonomias, evidencias] = await Promise.all([
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre').order('id')),
             sb.rpc('fn_mis_mercados'),
             traerTodo(() => sb.from('usuario_mercados').select('mercado_id').eq('usuario_id', this.usuario.id).order('mercado_id')),
@@ -774,6 +787,7 @@ async function iniciar() {
             traerTodo(() => sb.from('compras').select(COLUMNAS_COMPRA_M).order('id')),
             traerTodo(() => sb.from('materiales').select(COLUMNAS_MATERIAL).order('id')),
             traerTodo(() => sb.from('v_materiales').select('material_id, taxonomia').order('material_id')),
+            cargarEvidencias(),
           ]);
           if (mis.error) throw mis.error;
 
@@ -782,6 +796,7 @@ async function iniciar() {
           this.proveedores = proveedores;
           this.subCampanas = subs;
           this.compras = compras;
+          this.evidencias = evidencias;
           const tax = new Map(taxonomias.map(t => [t.material_id, t.taxonomia]));
           this.filas = materiales.map(m => desdeBaseMaterial(m, tax.get(m.id)));
           this.ordenarFilas();

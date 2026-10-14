@@ -183,7 +183,7 @@ async function continuar() {
   }
 
   if (estado.session && estado.usuario) {
-    window.location.replace('compras.html');
+    window.location.replace(paginaDeInicio(estado.usuario));
     return;
   }
 

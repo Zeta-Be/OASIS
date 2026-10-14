@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="css/oasis.css">
   <link rel="stylesheet" href="css/tabla.css">
   <link rel="stylesheet" href="css/materiales.css">
+  <link rel="stylesheet" href="css/evidencias.css">
 </head>
 <body>
   <header class="topbar" id="barra"></header>
@@ -102,6 +103,7 @@
               <th>Enlace</th>
               <th class="calc">Imagen</th>
               <th>Reporte de implementación</th>
+              <th class="calc">Evidencias</th>
               <th class="num">Fecha inicio</th>
               <th class="num">Fecha fin</th>
               <th class="calc">Taxonomía</th>
@@ -110,7 +112,7 @@
           </thead>
           <tbody>
             <tr v-if="visibles.length === 0">
-              <td colspan="14" class="vacio">No hay materiales con estos filtros.</td>
+              <td colspan="15" class="vacio">No hay materiales con estos filtros.</td>
             </tr>
             <tr v-for="r in visibles" :key="r._k" :data-k="r._k" :class="{ resaltada: r._k === resaltada }">
               <td class="pegada c0 calc mono" :title="tramosDe(r)">
@@ -154,6 +156,12 @@
               <td>
                 <span v-if="soloLectura" class="txt corto" :title="r.reporte_implementacion">{{ r.reporte_implementacion }}</span>
                 <input v-else v-model="r.reporte_implementacion" class="ancho-m" :title="r.reporte_implementacion">
+              </td>
+              <td class="calc evidencias-col">
+                <button v-if="cuentaEvidencias(r)" type="button" class="ev-boton" @click="abrirEvidencias(r)"
+                        title="Ver las evidencias que subió el proveedor">
+                  <span class="mono">{{ cuentaEvidencias(r) }}</span> Ver
+                </button>
               </td>
               <td :class="claseErr(r, 'fecha_inicio')" :title="msgErr(r, 'fecha_inicio')">
                 <div class="con-control">
@@ -222,6 +230,12 @@
         </div>
       </div>
     </section>
+
+    <!-- Evidencias del material: las sube el proveedor desde el portal; aquí solo se ven -->
+    <transition name="panel">
+      <panel-evidencias v-if="panelEv" :material="panelEv" :evidencias="evidenciasPorMaterial.get(panelEv.id) || []"
+                        :puede-subir="false" :usuario="usuario" @cerrar="panelEv = null"></panel-evidencias>
+    </transition>
 
     <!-- Ayuda flotante: costo del día en el calendario, imagen ampliada en la tabla -->
     <div v-if="globo" class="globo" :style="{ left: globo.x + 'px', top: globo.y + 'px' }">
@@ -348,6 +362,7 @@
   <script src="js/comun.js"></script>
   <script src="js/componentes.js"></script>
   <script src="js/tramos.js"></script>
+  <script src="js/evidencias.js"></script>
   <script src="js/materiales.js"></script>
 </body>
 </html>

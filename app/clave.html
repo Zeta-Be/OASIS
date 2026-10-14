@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OASIS · Nueva contraseña</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sofia+Sans+Extra+Condensed:wght@700;800&family=Mulish:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="css/oasis.css">
+</head>
+<body>
+  <div class="login">
+    <section class="lado-marca">
+      <div>
+        <div class="marca">OASIS<span>.</span></div>
+        <p class="frase">Tu contraseña es temporal. Antes de seguir, elige una que solo tú conozcas.</p>
+      </div>
+      <div class="pie">ZETAB · V2.0</div>
+    </section>
+
+    <section class="lado-form">
+      <div class="caja">
+        <div class="eyebrow" id="quien">Cambio de contraseña</div>
+        <h1 class="titulo">Nueva contraseña</h1>
+
+        <form id="form-nueva" hidden novalidate>
+          <p class="ayuda">Mínimo 10 caracteres. No la compartas: el administrador no la conoce.</p>
+          <div class="campo">
+            <label for="nueva">Nueva contraseña</label>
+            <input id="nueva" type="password" autocomplete="new-password" required minlength="10">
+          </div>
+          <div class="campo">
+            <label for="repetir">Repítela</label>
+            <input id="repetir" type="password" autocomplete="new-password" required minlength="10">
+          </div>
+          <button class="btn p ancho" type="submit" id="btn-guardar" style="margin-top:18px">Guardar y entrar</button>
+          <div class="acciones">
+            <button class="btn" type="button" id="btn-salir">Salir</button>
+          </div>
+        </form>
+
+        <div id="mensaje" class="alerta" hidden style="margin-top:14px"></div>
+      </div>
+    </section>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script src="js/comun.js"></script>
+  <script src="js/clave.js"></script>
+</body>
+</html>

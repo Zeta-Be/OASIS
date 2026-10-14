@@ -1,0 +1,106 @@
+/* Evidencias: botón de la tabla y panel lateral. Portal y Materiales.
+   Sobre tabla.css (panel lateral). Fuente de verdad: DISENO.md */
+
+/* ---------------------------------------------------------------- Celda de la tabla */
+
+.tabla td.evidencias-col { padding: 0 8px; }
+.ev-boton {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  padding: 4px 9px;
+  font: 700 11.5px var(--f-cuerpo);
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ev-boton:hover { border-color: var(--k); }
+.ev-boton:focus-visible { outline: 2px solid var(--k); outline-offset: 1px; }
+.ev-boton .mono { font-weight: 500; }
+.ev-boton.vacio { color: var(--muted); }
+
+/* ---------------------------------------------------------------- Panel */
+
+.panel-evidencias .ev-cuerpo { display: block; }
+.ev-cuerpo > .alerta { margin-top: 14px; }
+
+.ev-agregar { border-bottom: 1px solid var(--rule); padding-bottom: 16px; }
+.ev-acciones { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+
+.ev-enlace { display: flex; align-items: flex-end; gap: 8px; }
+.ev-enlace .campo { flex: 1; }
+.ev-enlace .btn { height: 32px; padding: 0 12px; }
+.ev-enlace.err input { background: var(--err-wash); border-color: var(--err); box-shadow: inset 0 -2px 0 var(--err); }
+
+.ev-vacio { color: var(--muted); font-size: 12.5px; }
+
+/* Miniaturas: foto o primer cuadro del video */
+.ev-mini {
+  position: relative;
+  display: block;
+  width: 72px;
+  height: 54px;
+  background: var(--calc);
+  border: 1px solid var(--rule);
+  overflow: hidden;
+  padding: 0;
+}
+.ev-mini img, .ev-mini video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ev-mini.grande { width: 100%; height: 120px; cursor: zoom-in; }
+.ev-mini.grande:hover { border-color: var(--k); }
+.ev-mini.grande:focus-visible { outline: 2px solid var(--k); outline-offset: 1px; }
+.ev-sello {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  background: var(--k);
+  color: #F5F3EC;
+  font-size: 9.5px;
+  padding: 1px 5px;
+}
+
+.ev-meta { font-size: 10.5px; color: var(--muted); margin-top: 3px; }
+
+/* Subidas en curso */
+.ev-subidas { list-style: none; margin: 12px 0 0; padding: 0; }
+.ev-subidas li {
+  display: grid;
+  grid-template-columns: 72px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid var(--rule-soft);
+}
+.ev-sub-info { min-width: 0; }
+.ev-nombre { font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev-barra { height: 6px; background: var(--calc); margin-top: 6px; }
+.ev-barra span { display: block; height: 100%; background: var(--k); transition: width 0.15s linear; }
+.ev-subidas li.listo .ev-barra span { background: var(--ok); }
+
+/* Galería */
+.ev-galeria {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+.ev-borrar { display: inline-flex; gap: 6px; margin-top: 4px; }
+.mini.peligro { color: var(--err); border-color: var(--err); }
+
+/* Enlaces */
+.ev-enlaces { list-style: none; margin: 0; padding: 0; }
+.ev-enlaces li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  font-size: 12.5px;
+}
+.ev-enlaces a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+.ev-enlaces .ev-meta { margin: 0; white-space: nowrap; }
+.ev-enlaces .ev-borrar { margin: 0; }

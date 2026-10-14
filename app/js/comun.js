@@ -6,6 +6,8 @@ const sb = window.supabase.createClient(
 );
 
 const ROLES_INTERNOS = ['PLANNING', 'ZB', 'LECTURA', 'ADMIN'];
+const ROLES_EXTERNOS = ['PROVEEDOR', 'AGENCIA'];
+const esExterno = (usuario) => ROLES_EXTERNOS.includes(usuario.rol);
 
 // Fila de `usuarios` del login actual, o null.
 // RLS solo deja leer la fila propia y solo si el usuario está activo, así que
@@ -16,22 +18,42 @@ async function usuarioActual() {
 
   const { data, error } = await sb
     .from('usuarios')
-    .select('id, correo, nombre, rol, activo')
+    .select('id, correo, nombre, rol, activo, proveedor_id, debe_cambiar_clave')
     .eq('auth_user_id', session.user.id)
     .maybeSingle();
 
   if (error) throw error;
-  const usuario = data && data.activo && ROLES_INTERNOS.includes(data.rol) ? data : null;
+  const conocido = data && [...ROLES_INTERNOS, ...ROLES_EXTERNOS].includes(data.rol);
+  const usuario = conocido && data.activo ? data : null;
   return { session, usuario };
 }
 
-// Para páginas internas: sin sesión o sin acceso, vuelve al login.
+// Adónde va cada rol al entrar. Es solo comodidad: lo que protege los datos es
+// RLS, no esta redirección. Con contraseña temporal, primero a cambiarla.
+function paginaDeInicio(usuario) {
+  if (usuario.debe_cambiar_clave) return 'clave.html';
+  return esExterno(usuario) ? 'portal.html' : 'compras.html';
+}
+
+function irA(pagina) {
+  window.location.replace(pagina);
+  return new Promise(() => {}); // detiene la página mientras redirige
+}
+
+// Para páginas internas: sin sesión o sin acceso, vuelve al login; un externo
+// va al portal; con contraseña temporal, a cambiarla.
 async function requerirAcceso() {
   const { session, usuario } = await usuarioActual();
-  if (!session || !usuario) {
-    window.location.replace('index.html');
-    return new Promise(() => {}); // detiene la página mientras redirige
-  }
+  if (!session || !usuario) return irA('index.html');
+  if (usuario.debe_cambiar_clave || esExterno(usuario)) return irA(paginaDeInicio(usuario));
+  return usuario;
+}
+
+// Para el portal: solo PROVEEDOR y AGENCIA; un interno va a su pantalla.
+async function requerirAccesoExterno() {
+  const { session, usuario } = await usuarioActual();
+  if (!session || !usuario) return irA('index.html');
+  if (usuario.debe_cambiar_clave || !esExterno(usuario)) return irA(paginaDeInicio(usuario));
   return usuario;
 }
 
@@ -45,10 +67,11 @@ const NAVEGACION = [
   { clave: 'materiales', texto: 'Materiales', href: 'materiales.html' },
   { clave: 'inversion',  texto: 'Inversión',  href: 'inversion.html' },
   { clave: 'alertas',    texto: 'Alertas',    href: 'alertas.html' },
+  { clave: 'usuarios',   texto: 'Usuarios',   href: 'usuarios.html', solo: 'ADMIN' },
 ];
 
 function pintarBarra(contenedor, usuario, activa) {
-  const nav = NAVEGACION.map(n => {
+  const nav = NAVEGACION.filter(n => !n.solo || n.solo === usuario.rol).map(n => {
     const clase = n.clave === activa ? ' class="activo"' : '';
     const cuenta = n.clave === 'alertas' ? '<span class="cuenta-alertas mono"></span>' : '';
     return `<a href="${n.href}"${clase}>${n.texto}${cuenta}</a>`;

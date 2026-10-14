@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OASIS · Usuarios</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sofia+Sans+Extra+Condensed:wght@700;800&family=Mulish:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="css/oasis.css">
+  <link rel="stylesheet" href="css/tabla.css">
+  <link rel="stylesheet" href="css/usuarios.css">
+</head>
+<body>
+  <header class="topbar" id="barra"></header>
+
+  <main class="pagina" id="app" v-cloak>
+    <div class="eyebrow">Administración</div>
+    <h1 class="titulo">Usuarios</h1>
+
+    <div v-if="errorCarga" class="alerta error" style="margin-bottom:14px">{{ errorCarga }}</div>
+
+    <section class="card">
+      <div class="card-cab">
+        <h2>Accesos</h2>
+        <span class="estado-global mono">{{ cargando ? '' : `${usuarios.length} usuarios` }}</span>
+        <div class="acciones-cab">
+          <button class="btn p" type="button" :disabled="cargando" @click="abrirNuevo">Nuevo usuario</button>
+        </div>
+      </div>
+
+      <div class="filtros filtros-usuarios">
+        <div class="campo">
+          <label for="f-buscar">Buscar</label>
+          <input id="f-buscar" type="search" v-model="filtros.buscar" placeholder="Correo o nombre" autocomplete="off">
+        </div>
+        <div class="campo">
+          <label for="f-rol">Rol</label>
+          <select id="f-rol" v-model="filtros.rol">
+            <option value="">Todos</option>
+            <option v-for="r in ROLES" :key="r.valor" :value="r.valor">{{ r.etiqueta }}</option>
+          </select>
+        </div>
+        <div class="campo">
+          <label for="f-estado">Estado</label>
+          <select id="f-estado" v-model="filtros.estado">
+            <option value="">Todos</option>
+            <option value="activos">Activos</option>
+            <option value="inactivos">Inactivos</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="tabla-envoltura">
+        <div v-if="cargando" class="vacio">Cargando usuarios…</div>
+        <table v-else class="tabla tabla-usuarios">
+          <thead>
+            <tr>
+              <th class="calc">Correo</th>
+              <th class="calc">Nombre</th>
+              <th class="calc">Rol</th>
+              <th class="calc">Proveedor o mercados</th>
+              <th class="calc">Activo</th>
+              <th class="calc">Login creado</th>
+              <th class="estado-col"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!visibles.length"><td colspan="7" class="vacio">No hay usuarios con estos filtros.</td></tr>
+            <tr v-for="u in visibles" :key="u.id" :class="{ inactivo: !u.activo }">
+              <td class="calc mono correo">{{ u.correo }}</td>
+              <td class="calc">{{ u.nombre }}</td>
+              <td class="calc">{{ etiquetaRol(u.rol) }}</td>
+              <td class="calc">{{ alcance(u) }}</td>
+              <td class="calc"><span class="pill" :class="u.activo ? 'ok' : 'err'">{{ u.activo ? 'activo' : 'inactivo' }}</span></td>
+              <td class="calc">
+                {{ u.auth_user_id ? 'sí' : 'no' }}
+                <span v-if="u.debe_cambiar_clave" class="pill prop" title="Entra con una contraseña temporal y tiene que cambiarla">clave temporal</span>
+              </td>
+              <td class="estado-col">
+                <div class="acciones-fila">
+                  <template v-if="confirmar && confirmar.id === u.id">
+                    <span class="pregunta">{{ confirmar.pregunta }}</span>
+                    <button type="button" class="mini" :class="{ peligro: confirmar.accion === 'desactivar' }"
+                            :disabled="u._ocupado" @click="ejecutar(u, confirmar.accion)">Sí</button>
+                    <button type="button" class="mini" :disabled="u._ocupado" @click="confirmar = null">No</button>
+                  </template>
+                  <template v-else>
+                    <button v-if="u.activo && u.id !== yo.id" type="button" class="mini" :disabled="u._ocupado"
+                            @click="pedir(u, 'desactivar')">Desactivar</button>
+                    <button v-if="!u.activo" type="button" class="mini" :disabled="u._ocupado"
+                            @click="pedir(u, 'reactivar')">Reactivar</button>
+                    <button type="button" class="mini" :disabled="u._ocupado"
+                            @click="pedir(u, 'nueva_clave')">{{ u.auth_user_id ? 'Nueva contraseña' : 'Crear login' }}</button>
+                  </template>
+                  <span v-if="u._ocupado" class="pill prop">…</span>
+                </div>
+                <div v-if="u._error" class="campo-error">{{ u._error }}</div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Panel lateral: alta, o la contraseña temporal recién generada -->
+    <transition name="panel">
+      <div v-if="panel" class="panel-fondo" @pointerdown.self="cerrarPanel">
+        <aside class="panel" role="dialog" aria-labelledby="panel-titulo">
+          <header class="panel-cab">
+            <div>
+              <div class="eyebrow">{{ panel.clave ? panel.correo : 'Alta con login y contraseña temporal' }}</div>
+              <h2 id="panel-titulo">{{ panel.clave ? panel.titulo : 'Nuevo usuario' }}</h2>
+            </div>
+            <button type="button" class="cerrar" title="Cerrar (Esc)" @click="cerrarPanel">×</button>
+          </header>
+
+          <!-- La contraseña: se muestra esta única vez -->
+          <div v-if="panel.clave" class="panel-cuerpo clave-cuerpo">
+            <div class="ancho-2">
+              <div class="etiqueta">Contraseña temporal</div>
+              <div class="clave-caja">
+                <span class="mono clave">{{ panel.clave }}</span>
+                <button type="button" class="btn" @click="copiar">{{ copiada ? 'Copiada' : 'Copiar' }}</button>
+              </div>
+              <div class="alerta aviso" style="margin-top:12px">
+                <strong>Envíala por un canal privado.</strong> No se vuelve a mostrar: si se pierde, genera otra.
+                Al entrar, {{ panel.nombre }} tendrá que cambiarla.
+              </div>
+            </div>
+          </div>
+
+          <!-- Alta -->
+          <form v-else class="panel-cuerpo" id="form-usuario" @submit.prevent="crear" novalidate>
+            <div class="campo ancho-2" :class="{ err: errPanel('correo') }">
+              <label for="p-correo">Correo</label>
+              <input id="p-correo" v-model="panel.correo" type="email" autocomplete="off" placeholder="nombre@empresa.com"
+                     @blur="tocar('correo')">
+              <div class="campo-error" v-if="errPanel('correo')">{{ errPanel('correo') }}</div>
+            </div>
+            <div class="campo ancho-2" :class="{ err: errPanel('nombre') }">
+              <label for="p-nombre">Nombre</label>
+              <input id="p-nombre" v-model="panel.nombre" autocomplete="off" @blur="tocar('nombre')">
+              <div class="campo-error" v-if="errPanel('nombre')">{{ errPanel('nombre') }}</div>
+            </div>
+            <div class="campo ancho-2" :class="{ err: errPanel('rol') }">
+              <label for="p-rol">Rol</label>
+              <select id="p-rol" v-model="panel.rol" @blur="tocar('rol')">
+                <option :value="null"></option>
+                <option v-for="r in ROLES" :key="r.valor" :value="r.valor">{{ r.etiqueta }} — {{ r.ayuda }}</option>
+              </select>
+              <div class="campo-error" v-if="errPanel('rol')">{{ errPanel('rol') }}</div>
+            </div>
+
+            <template v-if="panel.rol === 'PROVEEDOR'">
+              <div class="campo">
+                <label for="p-mercado-prov">Mercado</label>
+                <select id="p-mercado-prov" v-model="panel.mercadoProveedor">
+                  <option v-for="m in mercados" :key="m.id" :value="m.id">{{ m.codigo }} · {{ m.nombre }}</option>
+                </select>
+              </div>
+              <div class="campo" :class="{ err: errPanel('proveedor_id') }">
+                <label for="p-proveedor">Proveedor</label>
+                <select id="p-proveedor" v-model="panel.proveedor_id" @blur="tocar('proveedor_id')">
+                  <option :value="null"></option>
+                  <option v-for="p in proveedoresDelMercado" :key="p.id" :value="p.id">{{ p.nombre }}</option>
+                </select>
+                <div class="campo-error" v-if="errPanel('proveedor_id')">{{ errPanel('proveedor_id') }}</div>
+              </div>
+              <div class="ancho-2 campo-pista">Ve solo los materiales de las compras de ese proveedor.</div>
+            </template>
+            <div v-else-if="panel.rol" class="campo ancho-2" :class="{ err: errPanel('mercados') }">
+              <label for="p-mercados">Mercados<span v-if="panel.rol === 'ADMIN'" class="opcional">opcional: un Admin ve todos</span></label>
+              <seleccion-multiple id="p-mercados" v-model="panel.mercados" :opciones="opcionesMercado"></seleccion-multiple>
+              <div class="campo-error" v-if="errPanel('mercados')">{{ errPanel('mercados') }}</div>
+            </div>
+          </form>
+
+          <footer class="panel-pie">
+            <div v-if="panel.error" class="alerta error">{{ panel.error }}</div>
+            <div v-else-if="!panel.clave && panel.intento && hayErrores" class="alerta error">Revisa los campos marcados.</div>
+            <div class="botones">
+              <template v-if="panel.clave">
+                <button type="button" class="btn p" @click="cerrarPanel">Listo</button>
+              </template>
+              <template v-else>
+                <button type="button" class="btn" :disabled="panel.guardando" @click="cerrarPanel">Cancelar</button>
+                <button type="submit" form="form-usuario" class="btn p" :disabled="panel.guardando">
+                  {{ panel.guardando ? 'Creando…' : 'Crear usuario y login' }}
+                </button>
+              </template>
+            </div>
+          </footer>
+        </aside>
+      </div>
+    </transition>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+  <script src="config.js"></script>
+  <script src="js/comun.js"></script>
+  <script src="js/componentes.js"></script>
+  <script src="js/usuarios.js"></script>
+</body>
+</html>
