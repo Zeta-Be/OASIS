@@ -355,7 +355,10 @@ async function iniciar() {
 
     methods: {
       fmtEntero(x) { return fmt.format(x); },
-      fmtPesos(x) { return esNumero(x) ? fmtPesos.format(x) : '—'; },
+      fmtMonto(x, mercadoId) {
+        const m = this.mercadosPorId.get(mercadoId);
+        return esNumero(x) ? fmtMoneda(m && m.moneda).format(x) : '—';
+      },
       nombreMes(k) { const [y, m] = k.split('-'); return `${MESES[Number(m) - 1]} ${y}`; },
       fechaCorta(iso) { if (!iso) return ''; const [y, m, d] = iso.split('-'); return `${d}/${m}/${y}`; },
       periodoCompra(c) { return c && c.fecha_inicio ? `${this.fechaCorta(c.fecha_inicio)} – ${this.fechaCorta(c.fecha_fin)}` : 'sin periodo'; },
@@ -745,8 +748,8 @@ async function iniciar() {
         else {
           const dc = k.compra.get(`${mk}|${c.codigo}|${dia}`);
           const dm = k.material.get(`${mk}|${cod}|${dia}`);
-          lineas.push(`Costo del día · compra: ${this.fmtPesos(dc)}`);
-          if (activo) lineas.push(`Costo del día · este material: ${this.fmtPesos(dm)}`);
+          lineas.push(`Costo del día · compra: ${this.fmtMonto(dc, c.mercado_id)}`);
+          if (activo) lineas.push(`Costo del día · este material: ${this.fmtMonto(dm, c.mercado_id)}`);
         }
         this.globo = { ...pos, lineas };
       },
@@ -779,7 +782,7 @@ async function iniciar() {
       async cargar() {
         try {
           const [mercados, mis, propios, proveedores, subs, compras, materiales, taxonomias, evidencias] = await Promise.all([
-            traerTodo(() => sb.from('mercados').select('id, codigo, nombre').order('id')),
+            traerTodo(() => sb.from('mercados').select('id, codigo, nombre, moneda').order('id')),
             sb.rpc('fn_mis_mercados'),
             traerTodo(() => sb.from('usuario_mercados').select('mercado_id').eq('usuario_id', this.usuario.id).order('mercado_id')),
             traerTodo(() => sb.from('proveedores').select('id, mercado_id, nombre').order('nombre')),

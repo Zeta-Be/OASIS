@@ -1,0 +1,8 @@
+{
+  "_comentario": "ID del Google Sheets de cada mercado (el de la URL). Los usa cargar_oasis.py con --mercado o --todos. Cada uno se comparte como Lector con oasis-lector@mbw-spl-brazil.iam.gserviceaccount.com.",
+  "MCO": "13Vh45CymNMntNG-EW3NQnglnfyvq39nT7nvediDTV1g",
+  "MLC": "15xTf904mSJFvW73tu38_nwyWsPrL0CyMIURHqTtOBbI",
+  "MLU": "1l6JzfXjHgoyot0EqcNAsRFsCzF7bxrOVqVxpd7N3GPE",
+  "MLA": "1iAmSoaMG3o9MNnuhQ2XbtPGm6JrEeaE1lV0krCxXc-k",
+  "MLM": "1YwdwSiMWPu9k46TbihKbAQrPcYt_mmcxHI15IskSRBg"
+}

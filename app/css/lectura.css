@@ -4,7 +4,7 @@
 
 /* Filtros encima de la card, sin caja propia */
 .filtros.filtros-sueltos { padding: 0 0 16px; border-bottom: 0; margin-top: -14px; }
-.filtros.filtros-inversion { grid-template-columns: auto repeat(5, minmax(140px, 220px)); }
+.filtros.filtros-inversion { grid-template-columns: auto repeat(6, minmax(130px, 210px)); }
 .ver-por button { height: 32px; white-space: nowrap; }
 @media (max-width: 1100px) {
   .filtros.filtros-inversion { grid-template-columns: repeat(3, minmax(140px, 1fr)); }
@@ -276,3 +276,29 @@ button.corte.editable:focus-visible { outline: 2px solid var(--k); outline-offse
 .canon-texto { font-family: var(--f-mono); font-size: 12px; padding: 6px 0; }
 .dup-acciones { display: flex; gap: 10px; }
 @media (max-width: 560px) { .dup-acciones { width: 100%; } .dup-acciones .btn { flex: 1; } }
+
+/* Alertas sin enlace (formatos parecidos): mismo renglón, sin flecha */
+.lista-alertas .sin-enlace {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+}
+.lista-alertas .sin-enlace .ref { font-family: var(--f-cuerpo); font-weight: 700; min-width: 0; }
+.lista-alertas .sin-enlace .ubic { white-space: normal; font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+
+/* Campaña sin taxonomía: un bloque por texto del Flow, con su corrección */
+.lista-taxonomia { list-style: none; margin: 0; padding: 0; }
+.lista-taxonomia > li { padding: 12px 14px; border-bottom: 1px solid var(--rule-soft); }
+.tax-cab { display: flex; align-items: baseline; gap: 12px; }
+.tax-texto { font-weight: 500; font-size: 12.5px; }
+.tax-n { font-size: 11.5px; color: var(--muted); }
+.tax-compras { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.tax-compras a { color: var(--ink-soft); }
+.tax-form { display: flex; align-items: flex-end; gap: 8px; max-width: 560px; }
+.tax-form .campo { flex: 1; }
+.tax-form .campo label { margin-top: 10px; }
+.tax-form .campo.err input { background: var(--err-wash); border-color: var(--err); box-shadow: inset 0 -2px 0 var(--err); }
+.tax-form .btn { height: 32px; padding: 0 14px; }
+.tax-ok { color: var(--ok); font-size: 11.5px; margin-top: 4px; }

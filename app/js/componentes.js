@@ -5,9 +5,9 @@ const { createApp, nextTick } = Vue;
 
 // Espejo de los enums de la base (oasis_v2_esquema.sql). Si cambian allá, cambian aquí.
 const ENUMS = {
-  tipo_compra: ['DIRECTO', 'BONIFICADO'],
+  tipo_compra: ['DIRECTO', 'BONIFICADO', 'FACTURABLE', 'PAGO ANTICIPADO'],
   medio:       ['OOH', 'DOOH'],
-  tipo_costo:  ['EXHIBICION', 'PRODUCCION', 'IMPUESTOS'],
+  tipo_costo:  ['EXHIBICION', 'PRODUCCION', 'IMPUESTOS', 'COLOCACION'],
 };
 
 // El panel que se está cerrando sigue en el DOM durante su animación de salida.
@@ -17,6 +17,26 @@ const MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'O
 
 const fmt = new Intl.NumberFormat('es-CO', { maximumFractionDigits: 2 });
 const fmtPesos = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
+
+// Cada cifra con la moneda de su mercado (mercados.moneda). Nunca se suman
+// montos de mercados distintos: sus monedas no se pueden sumar.
+const _formatosMoneda = new Map();
+function fmtMoneda(moneda) {
+  const m = moneda || 'COP';
+  if (!_formatosMoneda.has(m)) {
+    _formatosMoneda.set(m, new Intl.NumberFormat('es-CO', { style: 'currency', currency: m, maximumFractionDigits: 0 }));
+  }
+  return _formatosMoneda.get(m);
+}
+// "$ 632 M" (millones) o "$ 85 mil", para etiquetas de gráficos. El símbolo $
+// es el mismo en COP, CLP, ARS, MXN y UYU: la moneda la dice el encabezado.
+function montoCorto(x) {
+  const n = x / 1e6;
+  const cifra = Math.abs(n) >= 1
+    ? `${n.toLocaleString('es-CO', { maximumFractionDigits: Math.abs(n) < 100 ? 1 : 0 })} M`
+    : `${Math.round(x / 1e3).toLocaleString('es-CO')} mil`;
+  return `$ ${cifra}`;
+}
 
 // "2026-10-05" -> "5 oct 2026"
 function fechaHumana(iso) {

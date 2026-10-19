@@ -33,8 +33,7 @@
       <div class="campo">
         <label for="f-mercado">Mercado</label>
         <select id="f-mercado" v-model="filtros.mercado" :disabled="misMercados.length === 1">
-          <option v-if="misMercados.length > 1" value="">Todos</option>
-          <option v-for="m in misMercados" :key="m.id" :value="m.id">{{ m.codigo }} · {{ m.nombre }}</option>
+          <option v-for="m in misMercados" :key="m.id" :value="m.id">{{ m.codigo }} · {{ m.nombre }} ({{ m.moneda }})</option>
         </select>
       </div>
       <div class="campo">
@@ -48,6 +47,10 @@
       <div class="campo">
         <label for="f-tipo">Tipo de costo</label>
         <seleccion-multiple id="f-tipo" v-model="filtros.tiposCosto" :opciones="opcionesTipoCosto"></seleccion-multiple>
+      </div>
+      <div class="campo">
+        <label for="f-campana">Campaña</label>
+        <seleccion-multiple id="f-campana" v-model="filtros.campanas" :opciones="opcionesCampana"></seleccion-multiple>
       </div>
       <div class="campo">
         <label for="f-sub">Sub campaña</label>
@@ -64,7 +67,7 @@
           <span><i class="muestra-g ejec"></i>Ejecutado</span>
           <span><i class="muestra-g pend"></i>Por ejecutar</span>
         </div>
-        <span class="nota-graficos">Barra completa = proyectado · M = millones</span>
+        <span class="nota-graficos">Barra completa = proyectado · M = millones de {{ moneda }}</span>
         <div class="acciones-cab">
           <button class="btn" type="button" :disabled="!datos.diaria.filas.length"
                   @click="verTablasGraficos = !verTablasGraficos">{{ verTablasGraficos ? 'Ver gráficos' : 'Ver como tabla' }}</button>
@@ -164,15 +167,15 @@
       <!-- KPIs: sobre todo lo filtrado de la pestaña -->
       <div class="kpis">
         <div class="kpi">
-          <div class="kpi-et">Costo proyectado</div>
+          <div class="kpi-et">Costo proyectado · {{ moneda }}</div>
           <div class="kpi-val mono">{{ actual.cargando ? '…' : pesos(sumas.proyectado) }}</div>
         </div>
         <div class="kpi">
-          <div class="kpi-et">Costo ejecutado</div>
+          <div class="kpi-et">Costo ejecutado · {{ moneda }}</div>
           <div class="kpi-val mono">{{ actual.cargando ? '…' : pesos(sumas.ejecutado) }}</div>
         </div>
         <div class="kpi">
-          <div class="kpi-et">Por ejecutar</div>
+          <div class="kpi-et">Por ejecutar · {{ moneda }}</div>
           <div class="kpi-val mono">{{ actual.cargando ? '…' : pesos(sumas.porEjecutar) }}</div>
         </div>
         <div class="kpi">

@@ -6,6 +6,7 @@ const COLUMNAS_COMPRA = [
   'tipo_compra', 'medio', 'tipo_costo', 'formato', 'ubicacion', 'ciudad', 'tiempo',
   'tarifa_bruta', 'descuento_pct', 'tarifa_neta', 'cantidad', 'nro_semanas',
   'valor_total', 'valor_total_manual', 'fecha_inicio', 'fecha_fin',
+  'campana_texto', 'campana_taxonomia',
 ].join(', ');
 
 // Lee lo que la gente escribe: "1.234.567", "1234567,5", "10,71", "10.71".
@@ -156,13 +157,15 @@ const Combo = {
 let contadorFilas = 0;
 
 // Lo que se manda a la base. El descuento en pantalla va de 0 a 100; en la base,
-// como fracción (0,15 = 15 %). La campaña la fija el mercado.
-function aPayload(r, campanaOoh) {
+// como fracción (0,15 = 15 %). La campaña es de cada compra (columna CAMPAÑA
+// del Flow): editar una compra no la toca. Una compra nueva arranca con la
+// campaña de parque fijo del mercado (borradorNuevo).
+function aPayload(r) {
   return {
     mercado_id:         r.mercado_id,
     codigo:             r.codigo,
     cliente:            r.cliente,
-    campana_id:         campanaOoh || r.campana_id,
+    campana_id:         r.campana_id,
     proveedor_id:       r.proveedor_id,
     tipo_compra:        r.tipo_compra,
     medio:              r.medio,
@@ -192,6 +195,8 @@ function desdeBase(c) {
     codigo: c.codigo,
     cliente: c.cliente,
     campana_id: c.campana_id,
+    campana_texto: c.campana_texto,
+    campana_taxonomia: c.campana_taxonomia,
     proveedor_id: c.proveedor_id,
     tipo_compra: c.tipo_compra,
     medio: c.medio,
@@ -243,7 +248,9 @@ function validar(r, ctx) {
     if (!r[c]) e[c] = obligatorio;
   }
 
-  if (!ctx.campanaOoh(r.mercado_id)) e.campana_id = 'El mercado no tiene campaña OOH configurada';
+  // Solo una compra nueva necesita campaña para guardarse. Una cargada del
+  // Sheets sin campaña reconocida se corrige desde Alertas y no bloquea la fila.
+  if (!r.id && !r.campana_id) e.campana_id = 'El mercado no tiene campaña de parque fijo configurada';
 
   if (!r.proveedor_id) e.proveedor_id = obligatorio;
   else {
@@ -395,8 +402,14 @@ async function iniciar() {
         });
       },
 
-      sumaVisible() {
-        return this.visibles.reduce((s, r) => s + (esNumero(r.valor_total) ? r.valor_total : 0), 0);
+      // Una suma por moneda: con «Todos», pesos colombianos y chilenos no se suman.
+      sumasPorMoneda() {
+        const m = new Map();
+        for (const r of this.visibles) {
+          const moneda = (this.mercadosPorId.get(r.mercado_id) || {}).moneda || '';
+          m.set(moneda, (m.get(moneda) || 0) + (esNumero(r.valor_total) ? r.valor_total : 0));
+        }
+        return [...m.entries()].sort().map(([moneda, suma]) => ({ moneda, suma }));
       },
 
       // Formatos ya guardados en cada mercado (lo que hay en la base, no lo que se está escribiendo).
@@ -469,8 +482,8 @@ async function iniciar() {
       codigoMercado(id) { const m = this.mercadosPorId.get(id); return m ? m.codigo : '?'; },
       campanaOoh(mercadoId) { const m = this.mercadosPorId.get(mercadoId); return m ? m.campana_ooh_id : null; },
       nombreCampana(r) {
-        const c = this.campanasPorId.get(this.campanaOoh(r.mercado_id) || r.campana_id);
-        return c ? c.nombre_unico : '';
+        const c = this.campanasPorId.get(r.campana_id);
+        return c ? c.nombre_unico : (r.campana_taxonomia || r.campana_texto || '');
       },
       obsNeta,
 
@@ -559,7 +572,7 @@ async function iniciar() {
           return;
         }
 
-        const payload = aPayload(r, this.campanaOoh(r.mercado_id));
+        const payload = aPayload(r);
         const snap = JSON.stringify(payload);
         if (snap === r._snap) {
           if (r._estado && r._estado.clase !== 'ok') r._estado = null;
@@ -590,7 +603,6 @@ async function iniciar() {
         } else {
           r._snap = snap;
           r.formato = payload.formato;
-          r.campana_id = payload.campana_id;
           r._formatoGuardado = payload.formato;
           const estado = { clase: 'ok', texto: 'guardado' };
           r._estado = estado;
@@ -657,7 +669,7 @@ async function iniciar() {
 
         b._guardando = true;
         try {
-          const payload = aPayload(b, this.campanaOoh(b.mercado_id));
+          const payload = aPayload(b);
           payload.codigo = await this.siguienteCodigoEnBase(b.mercado_id);
           let res = await sb.from('compras').insert(payload).select(COLUMNAS_COMPRA).single();
           if (res.error && res.error.code === '23505') {
@@ -667,7 +679,7 @@ async function iniciar() {
           if (res.error) throw res.error;
 
           const r = desdeBase(res.data);
-          r._snap = JSON.stringify(aPayload(r, this.campanaOoh(r.mercado_id)));
+          r._snap = JSON.stringify(aPayload(r));
           r._estado = { clase: 'ok', texto: 'creada' };
           this.filas.push(r);
           this.borrador = null;
@@ -701,7 +713,7 @@ async function iniciar() {
       async cargar() {
         try {
           const [mercados, mis, propios, campanas, proveedores, compras] = await Promise.all([
-            traerTodo(() => sb.from('mercados').select('id, codigo, nombre, activo, campana_ooh_id').order('id')),
+            traerTodo(() => sb.from('mercados').select('id, codigo, nombre, activo, campana_ooh_id, moneda').order('id')),
             sb.rpc('fn_mis_mercados'),
             traerTodo(() => sb.from('usuario_mercados').select('mercado_id')
               .eq('usuario_id', this.usuario.id).order('mercado_id')),  // un ADMIN ve las de todos
@@ -717,7 +729,7 @@ async function iniciar() {
           this.proveedores = proveedores;
           this.filas = compras.map(c => {
             const r = desdeBase(c);
-            r._snap = JSON.stringify(aPayload(r, this.campanaOoh(r.mercado_id)));
+            r._snap = JSON.stringify(aPayload(r));
             return r;
           });
 

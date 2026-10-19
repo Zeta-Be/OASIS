@@ -11,14 +11,14 @@
 --
 -- Requiere sql/fase3_portal.sql y sql/fase3_evidencias.sql aplicados.
 --
--- El proveedor de prueba es EFECTIMEDIOS (MCO). Al escribir esto tenía 190
+-- El proveedor de prueba es EFECTIMEDIOS (MCO). El 19-10-2026 tenía 218
 -- materiales; si el Sheets agrega o quita materiales suyos, actualizar
 -- ESPERADO_PROVEEDOR.
 -- =============================================================================
 
 DO $pruebas$
 DECLARE
-    ESPERADO_PROVEEDOR constant integer := 190;
+    ESPERADO_PROVEEDOR constant integer := 218;
     COLUMNAS_VISTA constant text := 'id,codigo,sub_campana,referencia,fecha_inicio,fecha_fin,enlace,reporte_implementacion,'
                                  || 'evidencia_url,compra,proveedor,formato,ubicacion,ciudad,tipo_costo';
     TABLAS_CERO constant text[] := ARRAY['compras', 'mercados', 'proveedores', 'proveedor_grupos', 'configuracion',
@@ -522,7 +522,7 @@ BEGIN
     -- Escala numérica: reescribir un monto igual con otra escala no es un cambio.
     UPDATE public.compras SET valor_total = round(valor_total, 2) + 0.00 WHERE mercado_id = v_mco;
     GET DIAGNOSTICS n2 = ROW_COUNT;
-    SELECT count(*) INTO n FROM public.auditoria WHERE tabla = 'compras';
+    SELECT count(*) INTO n FROM public.auditoria WHERE tabla = 'compras' AND campo = 'valor_total';
     r := r || format('%s  auditoria ignora el cambio de escala de valor_total en %s compras (%s filas)', CASE WHEN n = 0 AND n2 > 0 THEN 'OK   ' ELSE 'FALLA' END, n2, n);
 
     PERFORM set_config('request.jwt.claims', json_build_object('sub', a_lec, 'role', 'authenticated')::text, true);
@@ -530,7 +530,8 @@ BEGIN
     SELECT count(*) INTO n FROM public.compras;
     UPDATE public.materiales SET referencia = 'x' WHERE id = m_propio;
     GET DIAGNOSTICS n2 = ROW_COUNT;
-    r := r || format('%s  LECTURA ve %s compras y no edita (%s filas)', CASE WHEN n = e_comp_mco AND n2 = 0 THEN 'OK   ' ELSE 'FALLA' END, n, n2);
+    -- LECTURA ve todos los mercados (sql/mercados.sql), aunque solo tenga MCO asignado.
+    r := r || format('%s  LECTURA ve %s compras (todas: %s) y no edita (%s filas)', CASE WHEN n = e_comp_total AND n2 = 0 THEN 'OK   ' ELSE 'FALLA' END, n, e_comp_total, n2);
     RESET ROLE;
 
     PERFORM set_config('request.jwt.claims', json_build_object('sub', a_adm, 'role', 'authenticated')::text, true);

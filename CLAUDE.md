@@ -17,7 +17,8 @@ El objetivo del sistema es saber cuánta plata corresponde a cada material, día
 |---|---|
 | Base de datos | Supabase, proyecto `tjlteqhqctdtlbppigdi` (Postgres), conectado por MCP en modo lectura |
 | Esquema original | `oasis_v2_esquema.sql` (vocabulario viejo; ver `migracion_vocabulario.sql`) |
-| Carga desde Sheets | `cargar_oasis.py` — lee el Sheets en vivo y hace upsert |
+| Carga desde Sheets | `cargar_oasis.py` — lee el Sheets de cada mercado en vivo y hace upsert; los IDs de los Sheets están en `mercados.json`. Ver «Cómo cargar datos» |
+| Varios mercados | `sql/mercados_enum.sql` (COLOCACION; va primero y aparte) y `sql/mercados.sql` (moneda, campaña por compra, `campanas_alias`, columnas que admiten vacío, vistas, alertas nuevas, `fn_asignar_taxonomia`); pruebas en `sql/mercados_pruebas.sql` (se revierten solas). Ver «Varios mercados» |
 | Contraseña olvidada de un ADMIN | `cambiar_clave.py` — la cambia directo en Auth por la conexión de `.env` (ver «Alta de usuarios») |
 | Credenciales Google | `credenciales_google.json` — cuenta de servicio, nunca al repositorio |
 | Credenciales Postgres | `.env` — nunca al repositorio |
@@ -32,7 +33,7 @@ El objetivo del sistema es saber cuánta plata corresponde a cada material, día
 | Plantilla de correo de acceso | `supabase/plantilla_codigo.html` — se pega a mano en Supabase → Authentication → Emails (Magic Link y Confirm signup). Todavía no se puede: Supabase no deja editar plantillas sin SMTP propio |
 | Detector de duplicados | `sql/duplicados.sql` (tabla, RLS, `fn_unificar_duplicado`, `fn_rechazar_duplicado`), Edge Function `supabase/functions/detectar-duplicados/` (el prompt está en `prompt.md`), prueba local `supabase/probar_duplicados.ts`. Ver «Detector de duplicados» |
 | Código | GitHub `Zeta-Be/OASIS` (https://github.com/Zeta-Be/OASIS) |
-| Fuente de captura actual | Google Sheets `13Vh45CymNMntNG-EW3NQnglnfyvq39nT7nvediDTV1g` (los equipos siguen llenando ahí hasta que exista la interfaz) |
+| Fuente de captura actual | Un Google Sheets por mercado, con los IDs en `mercados.json` (MCO `13Vh45CymNMntNG-EW3NQnglnfyvq39nT7nvediDTV1g`). Los equipos siguen llenando ahí hasta el corte. Cada Sheets se comparte como Lector con `oasis-lector@mbw-spl-brazil.iam.gserviceaccount.com` |
 
 ## Modelo de datos
 
@@ -44,17 +45,17 @@ usuarios ──< usuario_mercados    (a qué países accede cada usuario interno
 configuracion                    (clave fecha_corte: nula = hoy)
 ```
 
-Siete mercados: MCO, MLB, MLM, MLA, MLC, MLU, MPE. Hoy solo hay datos de MCO.
+Siete mercados: MCO, MLB, MLM, MLA, MLC, MLU, MPE, cada uno con su moneda (`mercados.moneda`: COP, BRL, MXN, ARS, CLP, UYU, PEN). Hay datos de MCO, MLC, MLU, MLA y MLM.
 
-Enums: `tipo_costo` (EXHIBICION, PRODUCCION, IMPUESTOS), `tipo_compra` (DIRECTO, BONIFICADO), `medio` (OOH, DOOH), `rol` (PLANNING, ZB, AGENCIA, PROVEEDOR, LECTURA, ADMIN).
+Enums: `tipo_costo` (EXHIBICION, PRODUCCION, IMPUESTOS, COLOCACION), `tipo_compra` (DIRECTO, BONIFICADO, FACTURABLE, PAGO ANTICIPADO), `medio` (OOH, DOOH), `rol` (PLANNING, ZB, AGENCIA, PROVEEDOR, LECTURA, ADMIN). Un valor del Sheets que no está en su enum entra vacío, con el texto original en `compras.fuera_de_catalogo` y la alerta «valor fuera de catálogo».
 
-**Rol LECTURA.** Consulta interna sin captura: jefes, otras áreas, gente nueva en planning. Ve las cuatro pantallas con los datos de sus mercados, filtra y exporta; no escribe nada. No es el rol de BI: BI se conectará a las vistas directamente, sin usuario en la app, y eso se define en la Fase 4.
+**Rol LECTURA.** Consulta interna sin captura: jefes, otras áreas, gente nueva en planning. Ve las cuatro pantallas con los datos de **todos** los mercados (igual que ADMIN; `fn_mis_mercados()`), filtra y exporta; no escribe nada. Sus `usuario_mercados` solo deciden con qué mercado abre. No es el rol de BI: BI se conectará a las vistas directamente, sin usuario en la app, y eso se define en la Fase 4.
 
-Vistas: `v_materiales_externos` (la única para PROVEEDOR y AGENCIA; ver «Acceso externo»), `v_materiales` (nivel material, con taxonomía), `v_inversion_diaria`, `v_inversion_semanal`, `v_inversion_total`, `v_alertas` (alerta, referencia y, para enlazar, mercado, compra_id, material_id), `v_cuadre`, `v_sub_campanas` (glosario de cada mercado sin su campaña OOH; para elegir sub campaña en Materiales).
+Vistas: `v_materiales_externos` (la única para PROVEEDOR y AGENCIA; ver «Acceso externo»), `v_materiales` (nivel material, con taxonomía; desde `sql/mercados.sql` también mercado_id, moneda y campana_grupo al final), `v_inversion_diaria`, `v_inversion_semanal`, `v_inversion_total`, `v_alertas` (alerta, referencia y, para enlazar, mercado, compra_id, material_id; al final mercado_id y detalle), `v_cuadre` (cruza por código **y** mercado), `v_sub_campanas` (glosario de cada mercado sin su campaña OOH; para elegir sub campaña en Materiales).
 
 **La interfaz lee las vistas de inversión por `fn_inversion_diaria()`, `fn_inversion_semanal()` y `fn_inversion_total()`**, nunca directo. Con RLS el planificador estima mal cuántas compras ve el usuario y la vista pasa de 0,5 s a 14 s; `authenticated` corta a los 8 s. Las funciones devuelven la vista tal cual, con permisos del usuario, y solo apagan los nested loops. BI (sin RLS) no se ve afectado. Si se agrega otra lectura de esas vistas desde la app, va por estas funciones.
 
-**Campaña de la compra.** La fija el mercado: `mercados.campana_ooh_id` (MCO = PARQUE-FIJO). Los demás mercados aún no la tienen y no pueden crear compras. La carga avisa si el Sheets trae otra y usa la del mercado.
+**Campaña de la compra.** Es de cada compra: la columna CAMPAÑA del Flow, que debe ser una taxonomía (`MLC_ML_OTH-PF_ALL_ALTO-IMPACTO_X`). Se guarda en tres campos: `compras.campana_texto` (tal cual), `campana_taxonomia` (válida, del Flow o de `campanas_alias`) y `campana_id` (la campaña del glosario, si existe). Las reglas están en la base: `fn_taxonomia_de_texto` y `fn_campana_de_taxonomia`; las usan la carga y la corrección en Alertas. Las campañas OTH-PF (PARQUE-FIJO, ALTO-IMPACTO, PLANTA-FIJA, REGIONES, INTERIOR) cuentan como una sola, «PARQUE FIJO», para filtros (`campana_grupo`). `mercados.campana_ooh_id` ya solo es la campaña con la que la pantalla Compras arranca una compra nueva (MCO y MLU PARQUE-FIJO, MLA PARQUE-FIJO, MLC ALTO-IMPACTO, MLM PLANTA-FIJA); editar una compra nunca le cambia la campaña.
 
 **Valor total.** `compras.valor_total_manual`: false = sale de la fórmula (ver reglas de negocio), lo recalcula la interfaz; true = escrito a mano (marcado cuando difiere más de $1 de la fórmula, al migrar y al cargar). `descuento_pct` es fracción 0–1.
 
@@ -82,7 +83,7 @@ Primera vez que entran usuarios de fuera de ZetaBé. La regla: **un externo no v
 - **Auditoría:** tabla `auditoria` (tabla, fila_id, campo, valor_anterior, valor_nuevo, usuario_id, en). Un trigger en `compras` y `materiales` registra cada campo cambiado, de cualquier rol; alta y baja van como una fila con `campo` = `(alta)` o `(baja)` y la fila completa en JSON. No registra `actualizado_en` ni un número que solo cambia de escala (125000000 → 125000000.00). `usuario_id` nulo = cambio sin login de la app (la carga desde Sheets, una conexión directa). Solo ADMIN la lee; nadie escribe en ella por la API.
 - **Portal:** los externos entran a `portal.html` (el login y las pantallas internas los redirigen; la redirección es comodidad, la protección es RLS). Una card con sus materiales, filtros por mes y sub campaña, calendario sin costos y CSV con las mismas columnas de la vista (más el número de evidencias). Las evidencias van en un panel por material (ver «Evidencias»).
 - **Duplicados:** si se unifica un proveedor, sus compras pasan al proveedor canónico. Un usuario PROVEEDOR que apuntaba al proveedor absorbido deja de ver esas compras: hay que cambiar su `proveedor_id` al canónico.
-- **Pruebas:** después de tocar algo de esto, correr `sql/fase3_portal_pruebas.sql` en el SQL Editor. Crea usuarios de prueba (PROVEEDOR de EFECTIMEDIOS, AGENCIA de MCO, PLANNING, LECTURA, ADMIN), simula sus sesiones como la API y termina con un error a propósito que revierte todo; el informe sale en el mensaje del error, una línea OK o FALLA por prueba. Recorre todas las vistas de `public` salvo `v_materiales_externos`, así que una vista nueva queda cubierta sola. Tiene fijo que EFECTIMEDIOS ve 190 materiales (`ESPERADO_PROVEEDOR`): si el Sheets cambia los suyos, actualizarlo.
+- **Pruebas:** después de tocar algo de esto, correr `sql/fase3_portal_pruebas.sql` en el SQL Editor. Crea usuarios de prueba (PROVEEDOR de EFECTIMEDIOS, AGENCIA de MCO, PLANNING, LECTURA, ADMIN), simula sus sesiones como la API y termina con un error a propósito que revierte todo; el informe sale en el mensaje del error, una línea OK o FALLA por prueba. Recorre todas las vistas de `public` salvo `v_materiales_externos`, así que una vista nueva queda cubierta sola. Tiene fijo que EFECTIMEDIOS ve 218 materiales (al 19-10-2026) (`ESPERADO_PROVEEDOR`): si el Sheets cambia los suyos, actualizarlo.
 
 **Alta de un proveedor o una agencia:** en la pantalla Usuarios, como cualquier otro (ver «Alta de usuarios»). Al PROVEEDOR se le elige su proveedor (si no existe, primero su fila en `proveedores`, una por proveedor y mercado, con `grupo_id`; ojo con los duplicados: usar el nombre que ya tienen sus compras). No lleva `usuario_mercados`: su mercado sale del proveedor. La AGENCIA lleva sus mercados.
 
@@ -134,7 +135,7 @@ La IA propone, el humano confirma; nada se unifica sin clic. Card «Posibles dup
 
 **Un material nunca excede su compra.** Las compras son mensuales y las campañas no respetan el calendario. Si una campaña cruza dos compras del mismo soporte, se parte en dos materiales, uno por compra: 001-A del 15 al 30 de junio bajo la compra de junio, 002-A del 1 al 15 de julio bajo la de julio. En la herramienta es **bloqueo al guardar**, no aviso. El formulario debe ofrecer crear el segundo tramo bajo la compra siguiente, buscándola por soporte y proveedor.
 
-**Fórmula del valor total.** Depende de `compras.tiempo` (columna TIEMPO del Flow) y del tipo de costo. Si `tiempo = 'SEMANA'`, la tarifa es semanal: valor total = tarifa neta × cantidad × nro. semanas (vacío cuenta como 0). **Excepción: si `tipo_costo = 'PRODUCCION'`, el valor total es siempre tarifa neta × cantidad, aunque el tiempo sea SEMANA** (la producción se cobra una vez, no por semana). En cualquier otro caso, valor total = tarifa neta × cantidad. La comparación es exacta; `cargar_oasis.py` normaliza antes las variantes del Sheets (SEMANAS → SEMANA; DIA y 1 DIA → DIAS) y avisa cuántas filas cambió. La aplican igual la interfaz (`formulaValorTotal` en `app/js/compras.js`, también en el panel de nueva compra), `cargar_oasis.py` al marcar `valor_total_manual` y `sql/fase2_tiempo.sql`. Una compra es manual cuando su valor difiere más de $1 de la fórmula; cambiar la fórmula solo cambia la bandera, nunca el valor guardado.
+**Fórmula del valor total.** Depende de `compras.tiempo` (columna TIEMPO del Flow) y del tipo de costo. Sin tipo de costo no hay fórmula: la compra es manual. Si `tiempo = 'SEMANA'`, la tarifa es semanal: valor total = tarifa neta × cantidad × nro. semanas (vacío cuenta como 0). **Excepción: si `tipo_costo = 'PRODUCCION'`, el valor total es siempre tarifa neta × cantidad, aunque el tiempo sea SEMANA** (la producción se cobra una vez, no por semana). En cualquier otro caso, valor total = tarifa neta × cantidad. La comparación es exacta; `cargar_oasis.py` normaliza antes TIEMPO por la unidad que nombra (ver «Cómo cargar datos») y cuenta cuántas filas cambió. La aplican igual la interfaz (`formulaValorTotal` en `app/js/compras.js`, también en el panel de nueva compra), `cargar_oasis.py` al marcar `valor_total_manual` y `sql/fase2_tiempo.sql`. Una compra es manual cuando su valor difiere más de $1 de la fórmula; cambiar la fórmula solo cambia la bandera, nunca el valor guardado.
 
 **Costo proyectado vs ejecutado.** Proyectado es todo el periodo. Ejecutado solo los días hasta `configuracion.fecha_corte` (nula = hoy). Ambos se reportan siempre. Solo un ADMIN cambia la fecha de corte, desde el encabezado de Inversión y con confirmación; el cambio afecta también lo que lee BI.
 
@@ -156,7 +157,9 @@ Las vistas de inversión traen las dos lecturas: `month` (y `year`, `week`, `dat
 
 `v_inversion_diaria` es lo que consume BI. Sus 18 columnas originales, con sus nombres y su orden, deben mantenerse estables: site, bu, year, month, week, date, proveedor, tipo_costo, formato, valor_total, id (compra), id_ejecucion (material), campana, sub_campana, pct_participacion, costo_proyectado, estado, costo_ejecutado.
 
-Columnas agregadas después, siempre al final para no mover las anteriores: `mes_compra` (19, `sql/fase2_mes_compra.sql`). `v_inversion_semanal` y `v_inversion_total` también la tienen al final.
+Columnas agregadas después, siempre al final para no mover las anteriores: `mes_compra` (19, `sql/fase2_mes_compra.sql`); `moneda` (20), `mercado_id` (21) y `campana_grupo` (22, OTH-PF = «PARQUE FIJO»), de `sql/mercados.sql`. `v_inversion_semanal` y `v_inversion_total` también las tienen al final.
+
+**Nunca sumar mercados.** Cada mercado está en su moneda (`moneda`): un total de BI o de la app es por mercado. En la app, Inversión siempre muestra un mercado (no hay «Todos») y Compras, con «Todos», muestra un total por moneda.
 
 **La columna estándar para reportar por mes es `month`** (mes de ejecución, el reparto por día de OASIS). `mes_compra` es auxiliar: sirve para conciliar con el Flow o con la facturación, que asignan todo al mes de inicio de la compra, y no reemplaza a `month` en ningún reporte.
 
@@ -173,11 +176,36 @@ Fase 1 validada: `v_inversion_diaria` reproduce la hoja `Inversion_Daily` con di
 
 ```
 source .env
-python3 cargar_oasis.py --sheet 13Vh45CymNMntNG-EW3NQnglnfyvq39nT7nvediDTV1g --dry-run   # simula
-python3 cargar_oasis.py --sheet 13Vh45CymNMntNG-EW3NQnglnfyvq39nT7nvediDTV1g             # carga
+python3 cargar_oasis.py --todos --dry-run          # simula los cinco mercados
+python3 cargar_oasis.py --mercado MLC --dry-run    # simula uno
+python3 cargar_oasis.py --mercado MLC              # carga uno
+python3 cargar_oasis.py --todos                    # carga todos
 ```
 
-El script localiza encabezados por nombre, no por posición. Si falta uno, se detiene y dice cuál. Es repetible: hace upsert por llave natural. Detecta compras y materiales que ya no están en el Sheets pero no los borra: eso se decide a mano.
+Los IDs de los Sheets están en `mercados.json`. Cada mercado va en su propia transacción: si uno falla, los demás siguen y el resumen lo dice. Antes de tocar la base, el script compara el mercado con la celda PAÍS del Flow (C3) y con la tabla `mercados`; si no coinciden, no carga ese mercado. Localiza los encabezados por nombre, no por posición; si falta uno, se detiene y dice cuál. Es repetible: hace upsert por llave natural. Detecta compras y materiales que ya no están en el Sheets pero no los borra: eso se decide a mano. `--ensayo-sql archivo.sql` aplica una migración dentro de la misma transacción revertida, para ver cómo quedaría la carga con ella antes de aplicarla.
+
+**Todo se carga.** Lo incompleto o inconsistente entra y queda en Alertas de su mercado. Solo no entran: las filas del Flow que solo tienen el ID (plantilla vacía) y los materiales cuya compra no está en el Flow. El reporte dice, por mercado, cuántas compras y materiales leyó y cuántos entraron, qué normalizó en silencio y cada tipo de alerta con su conteo y los primeros 10 casos, leídos de `v_alertas` tal como los verá la pantalla.
+
+**En silencio** (solo se cuentan en el reporte):
+- **TIEMPO** por la unidad que nombra: Mes, Meses, MES, Mensual, «2 MESES» → MES; Semana, Semanas, Semanal → SEMANA; Día, Dia, Dias, Diario, «21 días» → DIAS. El número se pierde a propósito: la fórmula solo distingue SEMANA.
+- **FORMATO** a mayúsculas y espacios limpios. Lo que difiere en algo más (plural, tildes, una letra: PANTALLA DIGITAL / PANTALLAS DIGITALES) entra tal cual y va a la alerta «formatos parecidos» (`fn_clave_formato` y `levenshtein` de `fuzzystrmatch`).
+- **CAMPAÑA** con texto después de la taxonomía («…_INTERIOR_X  5», «… del 01/01/20»): se toma la taxonomía. Sin taxonomía, se busca en `campanas_alias`; si no está, entra el texto tal cual y sale «campaña sin taxonomía».
+
+**Proveedores, dos niveles, con reglas fijas** (el modelo no interviene en la carga):
+- **(a)** Si solo cambian mayúsculas, tildes, espacios, puntuación o sufijo societario (S.A., SAS, SRL…), se unifica sola al nombre que ya existe en la base, o al más frecuente en el Sheets si es nuevo. Queda como propuesta UNIFICADO en `duplicados_propuestos` y una fila en `auditoria` por variante. Una propuesta PENDIENTE que la regla ya resolvió se cierra sola.
+- **(b)** Si hay palabras de más o de menos (MASSIVA / MASSIVA METRO) o una posible abreviación (JCDX / JCDECAUX, AM ADS / AMERICAN ADS), se cargan como proveedores aparte y van a «proveedores por confirmar», en la card «Posibles duplicados» de Alertas. Nada de (b) se une sin clic.
+
+**Sin tipo de costo** no hay fórmula: la compra vale lo que diga el Sheets (0 si no dice nada) y se marca `valor_total_manual`. **Fechas:** las dos o ninguna; una compra o un material con fechas invertidas entra sin fechas, y el reporte muestra las originales para corregirlas en el Sheets.
+
+**Catálogos ampliados** (`sql/mercados_enum.sql`): tipo de costo COLOCACION (MLA) y tipo de compra FACTURABLE y PAGO ANTICIPADO (MLM). Al 19 de octubre de 2026 eran los únicos valores de los cinco Flows que faltaban. Un valor nuevo de un enum va siempre en un archivo aparte, que se confirma antes de usarlo: Postgres no deja usarlo en la misma transacción que lo agrega.
+
+## Varios mercados
+
+- **Alertas es por mercado:** no hay «Todos». Tipos nuevos: «campaña sin taxonomía», «campaña fuera del glosario», «compra incompleta» (dice qué le falta), «compra sin tipo de costo», «valor fuera de catálogo», «compra sin valor» (sin tarifa ni valor; las BONIFICADO no salen, valen 0 a propósito), «formatos parecidos» y «proveedores por confirmar» (estas últimas se ven en la card de duplicados, no en card propia).
+- **Corregir la taxonomía desde Alertas:** en «campaña sin taxonomía» cada texto del Flow tiene un campo para escribir la taxonomía correcta. `fn_asignar_taxonomia` (con permisos del usuario: PLANNING, ZB o ADMIN del mercado) la guarda en `campanas_alias` y corrige las compras del mercado con ese texto; la próxima carga ya no da la alerta. Precargado: MLU «PARQUE FIJO» → `MLU_ML_OTH-PF_ALL_PARQUE-FIJO_X`.
+- **Selector de mercado** en Compras, Materiales, Inversión y Alertas para quien tiene varios (ADMIN, LECTURA, un Equipo ZB con varios); con uno solo queda fijo. Inversión y Alertas nunca muestran «Todos». Inversión pide a la base solo el mercado elegido y escribe cada cifra con su moneda.
+- **Portal externo** sin cambios: un proveedor o una agencia siguen viendo solo lo suyo.
+- **Pruebas:** `sql/mercados_pruebas.sql` (Equipo ZB de MLC sin nada de MCO, LECTURA con todos, cuadre por mercado, compra sin tipo de costo, corrección de taxonomía). Después de tocar algo de esto, correrla junto con `sql/fase3_portal_pruebas.sql`.
 
 ## Qué NO hacer
 

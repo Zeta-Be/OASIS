@@ -15,7 +15,27 @@ const TIPOS_ALERTA = [
     explica: 'Compras sin ningún material: su valor no se reparte en ningún día.' },
   { alerta: 'sub campaña de otro mercado', titulo: 'Sub campaña de otro mercado', destino: 'material',
     explica: 'La sub campaña del material no es del glosario del mercado de su compra.' },
+  // De la carga de varios mercados (sql/mercados.sql): todo entra y queda aquí.
+  { alerta: 'campaña sin taxonomía', titulo: 'Campaña sin taxonomía', destino: 'taxonomia',
+    explica: 'La columna CAMPAÑA del Flow no tiene formato de taxonomía. Escribe la taxonomía correcta: corrige estas compras y las próximas cargas la traducen solas.' },
+  { alerta: 'campaña fuera del glosario', titulo: 'Campaña fuera del glosario', destino: 'compra',
+    explica: 'La taxonomía es válida, pero su campaña no está en el glosario del mercado. Se resuelve agregándola al Glosario del Sheets.' },
+  { alerta: 'compra incompleta', titulo: 'Compra incompleta', destino: 'compra',
+    explica: 'Le falta un dato que el Flow dejó vacío. Sin fechas, la compra no reparte su valor.' },
+  { alerta: 'compra sin tipo de costo', titulo: 'Sin tipo de costo', destino: 'compra',
+    explica: 'Sin tipo de costo no hay fórmula: vale lo que diga el Flow (0 si no dice nada).' },
+  { alerta: 'valor fuera de catálogo', titulo: 'Valor fuera de catálogo', destino: 'compra',
+    explica: 'El Flow trae un valor que OASIS no tiene en su lista. La compra entró con ese campo vacío; elige el valor en Compras.' },
+  { alerta: 'compra sin valor', titulo: 'Compra sin valor', destino: 'compra',
+    explica: 'Ni tarifa ni valor total. Las bonificadas no salen aquí: valen 0 a propósito.' },
+  { alerta: 'formatos parecidos', titulo: 'Formatos parecidos', destino: 'ninguno',
+    explica: 'Formatos del mismo mercado que se escriben distinto (plural, tildes, una letra). Si son el mismo, unifícalos en el Flow.' },
 ];
+
+const FORM_VACIO = Object.freeze({ valor: '', ocupado: false, error: '', ok: '' });
+
+// Estas no llevan card propia: la card «Posibles duplicados» ya las muestra con sus botones.
+const ALERTAS_EN_OTRA_CARD = ['proveedores por confirmar'];
 
 // Posibles duplicados: confianza → clase de pill (DISENO.md, pills de estado).
 const CLASE_CONFIANZA = { ALTA: 'ok', MEDIA: 'prop', BAJA: 'err' };
@@ -56,6 +76,7 @@ async function iniciar() {
       duplicados: [],
       analizando: false,
       dup: { mensaje: '', clase: '' },
+      taxonomias: {},           // texto del Flow -> { valor, ocupado, error, ok }
       CLASE_CONFIANZA,
     }),
 
@@ -75,6 +96,7 @@ async function iniciar() {
         const porTipo = new Map();
         for (const a of this.alertas) {
           if (k && a.mercado !== k) continue;
+          if (ALERTAS_EN_OTRA_CARD.includes(a.alerta)) continue;
           if (!porTipo.has(a.alerta)) porTipo.set(a.alerta, []);
           porTipo.get(a.alerta).push(a);
         }
@@ -123,13 +145,16 @@ async function iniciar() {
         };
       },
       total() { return this.grupos.reduce((s, g) => s + g.casos.length, 0); },
+      puedeCorregir() { return ['PLANNING', 'ZB', 'ADMIN'].includes(this.usuario.rol); },
     },
 
     watch: {
       'filtros.mercado'(id) {
         guardarMercadoActivo(id ? this.mercadosPorId.get(id).codigo : '');
         this.dup = { mensaje: '', clase: '' };
+        this.prepararTaxonomias();
       },
+      alertas() { this.prepararTaxonomias(); },
     },
 
     methods: {
@@ -145,6 +170,54 @@ async function iniciar() {
         return `materiales.html?${q}`;
       },
       ubicacion(a) { return this.ubicaciones.get(a.compra_id) || ''; },
+
+      // ---------------------------------------------------------- Taxonomía
+      // «Campaña sin taxonomía» se agrupa por el texto del Flow: una corrección
+      // arregla todas las compras con ese texto.
+      gruposTaxonomia(casos) {
+        const m = new Map();
+        for (const a of casos) {
+          const t = a.detalle || '(vacío)';
+          if (!m.has(t)) m.set(t, { texto: a.detalle, casos: [] });
+          m.get(t).casos.push(a);
+        }
+        return [...m.values()].sort((x, y) => y.casos.length - x.casos.length);
+      },
+      // Un formulario por texto del Flow. Se preparan fuera del pintado (crear
+      // objetos reactivos mientras Vue pinta lo hace volver a pintar).
+      prepararTaxonomias() {
+        const k = this.codigoFiltro;
+        for (const a of this.alertas) {
+          if (a.alerta !== 'campaña sin taxonomía' || a.mercado !== k || !a.detalle) continue;
+          const clave = `${k}|${a.detalle}`;
+          if (!this.taxonomias[clave]) this.taxonomias[clave] = { valor: `${k}_ML_`, ocupado: false, error: '', ok: '' };
+        }
+      },
+      formTax(texto) { return this.taxonomias[`${this.codigoFiltro}|${texto}`] || FORM_VACIO; },
+      async guardarTaxonomia(texto) {
+        const f = this.formTax(texto);
+        f.error = '';
+        f.ok = '';
+        const tax = f.valor.trim().toUpperCase();
+        if (!new RegExp(`^${this.codigoFiltro}_ML_[A-Z0-9-]+(_[A-Z0-9-]+){3,}$`).test(tax)) {
+          f.error = `Formato: ${this.codigoFiltro}_ML_TIPO_ALL_NOMBRE_X, en mayúsculas y sin espacios`;
+          return;
+        }
+        f.ocupado = true;
+        const { data, error } = await sb.rpc('fn_asignar_taxonomia', {
+          p_mercado_id: this.filtros.mercado, p_texto: texto, p_taxonomia: tax,
+        });
+        f.ocupado = false;
+        if (error) { f.error = 'No se guardó: ' + await mensajeDe(error); return; }
+        f.ok = `${data} ${data === 1 ? 'compra corregida' : 'compras corregidas'}`;
+        await this.recargarAlertas();
+      },
+      async recargarAlertas() {
+        this.alertas = await traerTodo(() => sb.from('v_alertas')
+          .select('alerta, referencia, mercado, compra_id, material_id, mercado_id, detalle')
+          .order('alerta').order('mercado').order('referencia'));
+        actualizarAlertasBarra(this.codigoFiltro);
+      },
 
       // ---------------------------------------------------------- Duplicados
       codigoMercado(id) { const m = this.mercadosPorId.get(id); return m ? m.codigo : ''; },
@@ -228,7 +301,7 @@ async function iniciar() {
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre').order('id')),
             sb.rpc('fn_mis_mercados'),
             traerTodo(() => sb.from('usuario_mercados').select('mercado_id').eq('usuario_id', this.usuario.id).order('mercado_id')),
-            traerTodo(() => sb.from('v_alertas').select('alerta, referencia, mercado, compra_id, material_id')
+            traerTodo(() => sb.from('v_alertas').select('alerta, referencia, mercado, compra_id, material_id, mercado_id, detalle')
               .order('alerta').order('mercado').order('referencia')),
             traerTodo(() => sb.from('compras').select('id, ubicacion').order('id')),
             sb.rpc('fn_uso_storage'),
@@ -244,7 +317,9 @@ async function iniciar() {
           this.alertas = alertas;
           this.ubicaciones = new Map(compras.map(c => [c.id, c.ubicacion]));
           await this.cargarDuplicados();
-          this.filtros.mercado = mercadoInicial(this.misMercados, propios.map(p => p.mercado_id));
+          // Alertas es por mercado: sin «Todos». Sin mercado recordado, el propio o el primero.
+          const inicial = mercadoInicial(this.misMercados, propios.map(p => p.mercado_id));
+          this.filtros.mercado = inicial || (this.misMercados[0] || {}).id || '';
           if (!this.misMercados.length) {
             this.errorCarga = 'Tu usuario no tiene mercados asignados. Pide a un administrador que te los asigne.';
           }

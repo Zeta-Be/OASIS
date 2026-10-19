@@ -33,7 +33,6 @@
       <div class="campo">
         <label for="f-mercado">Mercado</label>
         <select id="f-mercado" v-model="filtros.mercado" :disabled="misMercados.length === 1">
-          <option v-if="misMercados.length > 1" value="">Todos</option>
           <option v-for="m in misMercados" :key="m.id" :value="m.id">{{ m.codigo }} · {{ m.nombre }}</option>
         </select>
       </div>
@@ -103,12 +102,43 @@
         <h2>{{ g.titulo }}<span class="cuenta">{{ g.casos.length }}</span></h2>
       </div>
       <p v-if="g.explica" class="explica">{{ g.explica }}</p>
-      <ul class="lista-alertas">
-        <li v-for="a in g.casos" :key="a.alerta + a.compra_id + '-' + a.material_id">
-          <a :href="enlace(g, a)" :title="`${a.referencia} · ${ubicacion(a)}`">
-            <span v-if="!codigoFiltro" class="mk">{{ a.mercado }}</span>
+
+      <!-- Campaña sin taxonomía: una fila por texto del Flow, con su corrección -->
+      <ul v-if="g.destino === 'taxonomia'" class="lista-taxonomia">
+        <li v-for="t in gruposTaxonomia(g.casos)" :key="t.texto">
+          <div class="tax-cab">
+            <span class="tax-texto mono">{{ t.texto || '(sin campaña en el Flow)' }}</span>
+            <span class="tax-n">{{ t.casos.length }} {{ t.casos.length === 1 ? 'compra' : 'compras' }}</span>
+          </div>
+          <div class="tax-compras mono">
+            <a v-for="a in t.casos.slice(0, 12)" :key="a.compra_id" :href="enlace({ destino: 'compra' }, a)">{{ a.referencia }}</a>
+            <span v-if="t.casos.length > 12">y {{ t.casos.length - 12 }} más</span>
+          </div>
+          <form v-if="puedeCorregir && t.texto" class="tax-form" @submit.prevent="guardarTaxonomia(t.texto)">
+            <div class="campo" :class="{ err: formTax(t.texto).error }">
+              <label :for="'tax-' + t.texto">Taxonomía correcta</label>
+              <input :id="'tax-' + t.texto" v-model="formTax(t.texto).valor" class="mono" autocomplete="off"
+                     :disabled="formTax(t.texto).ocupado" :placeholder="`${codigoFiltro}_ML_OTH-PF_ALL_PARQUE-FIJO_X`">
+            </div>
+            <button type="submit" class="btn p" :disabled="formTax(t.texto).ocupado">
+              {{ formTax(t.texto).ocupado ? 'Guardando…' : 'Guardar' }}
+            </button>
+          </form>
+          <div v-if="formTax(t.texto).error" class="campo-error">{{ formTax(t.texto).error }}</div>
+          <div v-if="formTax(t.texto).ok" class="tax-ok">{{ formTax(t.texto).ok }}</div>
+        </li>
+      </ul>
+
+      <ul v-else class="lista-alertas">
+        <li v-for="a in g.casos" :key="a.alerta + a.referencia + a.compra_id + '-' + a.material_id">
+          <!-- Formatos parecidos no es una compra: no lleva enlace -->
+          <div v-if="g.destino === 'ninguno'" class="sin-enlace">
             <span class="ref">{{ a.referencia }}</span>
-            <span class="ubic">{{ ubicacion(a) }}</span>
+            <span class="ubic">{{ a.detalle }}</span>
+          </div>
+          <a v-else :href="enlace(g, a)" :title="`${a.referencia} · ${a.detalle || ubicacion(a)}`">
+            <span class="ref">{{ a.referencia }}</span>
+            <span class="ubic">{{ a.detalle || ubicacion(a) }}</span>
             <span class="ir">→</span>
           </a>
         </li>

@@ -56,9 +56,9 @@
           <div class="kpi-et">Compras</div>
           <div class="kpi-val mono">{{ fmtEntero(visibles.length) }}</div>
         </div>
-        <div class="kpi">
-          <div class="kpi-et">Valor total</div>
-          <div class="kpi-val mono">{{ fmtNumero(sumaVisible) }}</div>
+        <div v-for="s in sumasPorMoneda" :key="s.moneda" class="kpi">
+          <div class="kpi-et">Valor total · {{ s.moneda }}</div>
+          <div class="kpi-val mono">{{ fmtNumero(s.suma) }}</div>
         </div>
       </div>
 
@@ -107,7 +107,7 @@
                 <span v-if="soloLectura" class="txt">{{ r.cliente }}</span>
                 <input v-else v-model.trim="r.cliente" list="dl-clientes" class="ancho-s">
               </td>
-              <td class="calc" :class="claseErr(r, 'campana_id')" :title="msgErr(r, 'campana_id') || 'La fija el mercado'">{{ nombreCampana(r) }}</td>
+              <td class="calc" :class="claseErr(r, 'campana_id')" :title="msgErr(r, 'campana_id') || 'Columna CAMPAÑA del Flow. Si no tiene taxonomía, se corrige en Alertas'">{{ nombreCampana(r) }}</td>
               <td :class="claseErr(r, 'tipo_compra')" :title="msgErr(r, 'tipo_compra')">
                 <span v-if="soloLectura" class="txt">{{ r.tipo_compra }}</span>
                 <select v-else v-model="r.tipo_compra">
@@ -210,11 +210,12 @@
             </tr>
           </tbody>
           <tfoot>
-            <tr>
-              <td class="pegada c0">Total</td>
+            <!-- Una fila por moneda: con «Todos» no se suman mercados -->
+            <tr v-for="s in sumasPorMoneda" :key="s.moneda">
+              <td class="pegada c0">Total {{ s.moneda }}</td>
               <td class="pegada c1"></td>
               <td colspan="14"></td>
-              <td class="mono num destacado">{{ fmtNumero(sumaVisible) }}</td>
+              <td class="mono num destacado">{{ fmtNumero(s.suma) }}</td>
               <td colspan="3"></td>
             </tr>
           </tfoot>
@@ -246,7 +247,7 @@
             </div>
             <div class="campo ancho-2 calc" :class="{ err: errPanel('campana_id') }">
               <label>Campaña</label>
-              <input :value="nombreCampana(borrador)" disabled title="La fija el mercado">
+              <input :value="nombreCampana(borrador)" disabled title="Una compra nueva arranca con la campaña de parque fijo del mercado">
               <div class="campo-error" v-if="errPanel('campana_id')">{{ errPanel('campana_id') }}</div>
             </div>
             <div class="campo" :class="{ err: errPanel('tipo_compra') }">

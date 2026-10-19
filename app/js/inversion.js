@@ -26,6 +26,7 @@ const COLUMNAS_INV = {
   estado:            ['Estado', 'txt'],
   costo_ejecutado:   ['Costo ejecutado', 'pesos'],
   mes_compra:        ['Mes de compra', 'mes'],
+  moneda:            ['Moneda', 'cod'],
 };
 
 // Columnas en el orden de cada vista. `orden` es único por fila: la paginación
@@ -37,21 +38,21 @@ const PESTANAS = {
     titulo: 'Total', vista: 'v_inversion_total', fn: 'fn_inversion_total',
     columnas: ['site', 'bu', 'proveedor', 'tipo_costo', 'formato', 'valor_total', 'id', 'id_ejecucion',
       'campana', 'sub_campana', 'fecha_inicio', 'fecha_fin', 'dias', 'pct_participacion',
-      'costo_proyectado', 'costo_ejecutado', 'mes_compra'],
+      'costo_proyectado', 'costo_ejecutado', 'mes_compra', 'moneda'],
     orden: ['site', 'id_ejecucion'],
   },
   semanal: {
     titulo: 'Semanal', vista: 'v_inversion_semanal', fn: 'fn_inversion_semanal',
     columnas: ['site', 'bu', 'year', 'month', 'week', 'proveedor', 'tipo_costo', 'formato', 'valor_total',
       'id', 'id_ejecucion', 'campana', 'sub_campana', 'fecha_inicio', 'fecha_fin', 'dias',
-      'costo_proyectado', 'costo_ejecutado', 'mes_compra'],
+      'costo_proyectado', 'costo_ejecutado', 'mes_compra', 'moneda'],
     orden: ['site', 'id_ejecucion', 'year', 'month', 'week'],
   },
   diaria: {
     titulo: 'Diaria', vista: 'v_inversion_diaria', fn: 'fn_inversion_diaria',
     columnas: ['site', 'bu', 'year', 'month', 'week', 'date', 'proveedor', 'tipo_costo', 'formato',
       'valor_total', 'id', 'id_ejecucion', 'campana', 'sub_campana', 'pct_participacion',
-      'costo_proyectado', 'estado', 'costo_ejecutado', 'mes_compra'],
+      'costo_proyectado', 'estado', 'costo_ejecutado', 'mes_compra', 'moneda'],
     orden: ['site', 'id_ejecucion', 'date'],
   },
 };
@@ -59,12 +60,6 @@ const PESTANAS = {
 const POR_PAGINA = 200;
 const TOP_GRAFICO = 8;          // barras por gráfico; el resto va a "Otros"
 
-// Montos cortos para las etiquetas de los gráficos: "$ 632 M" (millones), "$ 85 mil".
-function pesosCortos(x) {
-  const m = x / 1e6;
-  if (Math.abs(m) >= 1) return `$ ${m.toLocaleString('es-CO', { maximumFractionDigits: Math.abs(m) < 100 ? 1 : 0 })} M`;
-  return `$ ${Math.round(x / 1e3).toLocaleString('es-CO')} mil`;
-}
 const SIN_SUB_INV = '__sin__';  // opción "Sin sub campaña" del filtro
 const pad2 = (n) => String(n).padStart(2, '0');
 
@@ -91,6 +86,10 @@ function semanalPorCompra(filas) {
   }
   return Object.freeze([...g.values()]);
 }
+
+// Un mercado a la vez, siempre: cada cifra va en su moneda y nunca se suman
+// mercados (pesos colombianos y chilenos no se suman). Por eso no hay «Todos»
+// y la pantalla pide a la base solo el mercado elegido.
 
 // Como traerTodo, pero pide las páginas en paralelo: la diaria pasa de 10.000 filas.
 async function traerTodoParalelo(consulta) {
@@ -128,7 +127,7 @@ async function iniciar() {
       // elección. Mes de compra es para conciliar con el Flow o la facturación.
       verPor: 'ejecucion',                      // 'ejecucion' | 'compra'
       pagina: 0,
-      filtros: { mercado: '', meses: [], proveedores: [], tiposCosto: [], subCampanas: [] },
+      filtros: { mercado: '', meses: [], proveedores: [], tiposCosto: [], subCampanas: [], campanas: [] },
       corte: { valor: null, cargado: false },   // configuracion.fecha_corte; null = hoy
       editorCorte: null,                        // { fecha, paso, nuevo, guardando, error }
       verTablasGraficos: false,                 // los gráficos como tabla (mismos datos)
@@ -140,10 +139,12 @@ async function iniciar() {
       misMercados() { return this.mercados.filter(m => this.misMercadoIds.includes(m.id)); },
       mercadosPorId() { return new Map(this.mercados.map(m => [m.id, m])); },
       codigoFiltro() { const m = this.mercadosPorId.get(this.filtros.mercado); return m ? m.codigo : ''; },
+      moneda() { const m = this.mercadosPorId.get(this.filtros.mercado); return m ? m.moneda : ''; },
+      formatoMoneda() { return fmtMoneda(this.moneda); },
 
       eyebrow() {
         const m = this.mercadosPorId.get(this.filtros.mercado);
-        return m ? `${m.codigo} · ${m.nombre}` : 'Todos mis mercados';
+        return m ? `${m.codigo} · ${m.nombre} · cifras en ${m.moneda}` : '';
       },
 
       actual() {
@@ -179,6 +180,9 @@ async function iniciar() {
       opcionesSubCampana() {
         return [{ valor: SIN_SUB_INV, etiqueta: 'Sin sub campaña' }, ...this.unicos('sub_campana')];
       },
+      // Campaña de la compra; las de parque fijo (OTH-PF: PARQUE-FIJO, ALTO-IMPACTO,
+      // PLANTA-FIJA…) son una sola opción, «PARQUE FIJO».
+      opcionesCampana() { return this.unicos('campana_grupo'); },
 
       filtradas() { return this.filtrar(this.actual.filas, this.pestana === 'total'); },
 
@@ -260,8 +264,10 @@ async function iniciar() {
     },
 
     watch: {
-      'filtros.mercado'(id) {
+      'filtros.mercado'(id, antes) {
         guardarMercadoActivo(id ? this.mercadosPorId.get(id).codigo : '');
+        if (id && id !== antes) this.cargarVistas();
+        this.filtros.campanas = [];
         const validos = new Set(this.opcionesProveedor.map(o => o.valor));
         this.filtros.proveedores = this.filtros.proveedores.filter(v => validos.has(v));
         const subs = new Set(this.opcionesSubCampana.map(o => o.valor));
@@ -285,12 +291,14 @@ async function iniciar() {
         const prov = new Set(f.proveedores);
         const tipos = new Set(f.tiposCosto);
         const subs = new Set(f.subCampanas);
+        const camps = new Set(f.campanas);
         const meses = f.meses;
         return filas.filter(r => {
           if (k && r.site !== k) return false;
           if (prov.size && !prov.has(r.proveedor)) return false;
           if (tipos.size && !tipos.has(r.tipo_costo)) return false;
           if (subs.size && !subs.has(r.sub_campana || SIN_SUB_INV)) return false;
+          if (camps.size && !camps.has(r.campana_grupo)) return false;
           if (meses.length) {
             // Por mes de compra el filtro es exacto en todas las pestañas: cada fila
             // tiene un solo mes de compra. Por mes de ejecución, Total no tiene mes:
@@ -317,15 +325,15 @@ async function iniciar() {
         const v = r[col];
         if (v === null || v === undefined) return '';
         switch (this.tipo(col)) {
-          case 'pesos': return fmtPesos.format(Number(v));
+          case 'pesos': return this.formatoMoneda.format(Number(v));
           case 'pct':   return (Number(v) * 100).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' %';
           case 'fecha': { const [y, m, d] = v.split('-'); return `${d}/${m}/${y}`; }
           case 'mes':   { const [y, m] = v.split('-'); return `${MESES[Number(m) - 1]} ${y}`; }
           default:      return v;
         }
       },
-      pesos(x) { return fmtPesos.format(x); },
-      pesosCortos,
+      pesos(x) { return this.formatoMoneda.format(x); },
+      pesosCortos(x) { return montoCorto(x); },
       pct(x) { return x.toLocaleString('es-CO', { maximumFractionDigits: 1 }) + ' %'; },
 
       // Ayuda flotante de una barra: el valor exacto de lo que la etiqueta abrevia.
@@ -336,9 +344,9 @@ async function iniciar() {
           y: caja.bottom + 6,
           titulo: g.etiqueta,
           filas: [
-            { clase: 'proy', valor: fmtPesos.format(g.proy), texto: `Proyectado · ${this.pct(g.pctTotal)} del total` },
-            { clase: 'ejec', valor: fmtPesos.format(g.ejec), texto: 'Ejecutado' },
-            { clase: 'pend', valor: fmtPesos.format(g.proy - g.ejec), texto: 'Por ejecutar' },
+            { clase: 'proy', valor: this.pesos(g.proy), texto: `Proyectado · ${this.pct(g.pctTotal)} del total` },
+            { clase: 'ejec', valor: this.pesos(g.ejec), texto: 'Ejecutado' },
+            { clase: 'pend', valor: this.pesos(g.proy - g.ejec), texto: 'Por ejecutar' },
           ],
         };
       },
@@ -353,7 +361,7 @@ async function iniciar() {
           const v = r[col];
           return typeof v === 'number' ? String(v).replace('.', ',') : v;
         }]);
-        descargarCsv(`inversion_${this.pestana}_${this.codigoFiltro || 'todos'}_${hoyIso()}.csv`, columnas, this.filtradas);
+        descargarCsv(`inversion_${this.pestana}_${this.codigoFiltro}_${hoyIso()}.csv`, columnas, this.filtradas);
       },
 
       // ---------------------------------------------------------------- Fecha de corte
@@ -392,20 +400,27 @@ async function iniciar() {
 
       // ---------------------------------------------------------------- Carga
 
+      // Solo el mercado elegido. Si el usuario cambia de mercado a mitad de una
+      // carga, la respuesta vieja se descarta (turno).
       async cargarVista(clave) {
         const p = PESTANAS[clave];
         const d = this.datos[clave];
+        const mercado = this.filtros.mercado;
+        if (!mercado) return;
+        const turno = d.turno = (d.turno || 0) + 1;
         d.cargando = true;
         d.error = '';
         try {
           const filas = await traerTodoParalelo((opciones) => {
-            if (opciones) return sb.rpc(p.fn, {}, { get: true, ...opciones });
-            let q = sb.rpc(p.fn, {}, { get: true }).select(p.columnas.join(', '));
+            if (opciones) return sb.rpc(p.fn, {}, { get: true, ...opciones }).eq('mercado_id', mercado);
+            let q = sb.rpc(p.fn, {}, { get: true }).select([...p.columnas, 'campana_grupo'].join(', ')).eq('mercado_id', mercado);
             for (const o of p.orden) q = q.order(o);
             return q;
           });
+          if (turno !== d.turno) return;
           d.filas = Object.freeze(filas);
         } catch (e) {
+          if (turno !== d.turno) return;
           console.error(e);
           d.error = `No se pudo cargar ${p.vista}: ${e.message || e}`;
         }
@@ -414,10 +429,9 @@ async function iniciar() {
       cargarVistas() { for (const clave of Object.keys(PESTANAS)) this.cargarVista(clave); },
 
       async cargar() {
-        this.cargarVistas();
         try {
           const [mercados, mis, propios, corte] = await Promise.all([
-            traerTodo(() => sb.from('mercados').select('id, codigo, nombre').order('id')),
+            traerTodo(() => sb.from('mercados').select('id, codigo, nombre, moneda').order('id')),
             sb.rpc('fn_mis_mercados'),
             traerTodo(() => sb.from('usuario_mercados').select('mercado_id').eq('usuario_id', this.usuario.id).order('mercado_id')),
             sb.from('configuracion').select('valor').eq('clave', 'fecha_corte').maybeSingle(),
@@ -427,7 +441,9 @@ async function iniciar() {
           this.mercados = mercados;
           this.misMercadoIds = (mis.data || []).map(x => (typeof x === 'object' ? Object.values(x)[0] : x)).map(Number);
           this.corte = { valor: (corte.data && corte.data.valor) || null, cargado: true };
-          this.filtros.mercado = mercadoInicial(this.misMercados, propios.map(p => p.mercado_id));
+          // Nunca «Todos»: sin mercado recordado, el propio o el primero.
+          const inicial = mercadoInicial(this.misMercados, propios.map(p => p.mercado_id));
+          this.filtros.mercado = inicial || (this.misMercados[0] || {}).id || '';
           if (!this.misMercados.length) {
             this.errorCarga = 'Tu usuario no tiene mercados asignados. Pide a un administrador que te los asigne.';
           }
