@@ -127,6 +127,32 @@ BEGIN
     GET DIAGNOSTICS n = ROW_COUNT;
     r := r || format('%s  habilitada en MCO desde el catálogo: aceptada (%s fila)', CASE WHEN n = 1 THEN 'OK   ' ELSE 'FALLA' END, n);
 
+    -- ============================================================== Campaña elegida en Compras (sql/compras_campana.sql)
+    r := r || text '--- Campaña de la compra (pantalla Compras)';
+    UPDATE compras SET campana_taxonomia = 'mlc_ml_oth-pf_all_alto-impacto_x', campana_id = 1 WHERE id = v_compra;
+    SELECT campana_id, campana_taxonomia INTO n, t FROM compras WHERE id = v_compra;
+    r := r || format('%s  taxonomía válida: queda %s y apunta a ALTO-IMPACTO aunque llegue otro id', CASE WHEN n = v_alto AND t = 'MLC_ML_OTH-PF_ALL_ALTO-IMPACTO_X' THEN 'OK   ' ELSE 'FALLA' END, t);
+    BEGIN
+        UPDATE compras SET campana_taxonomia = 'SUMMER' WHERE id = v_compra;
+        r := r || text 'FALLA  texto sin formato de taxonomía: lo aceptó';
+    EXCEPTION WHEN invalid_parameter_value THEN
+        r := r || format('OK     texto sin formato de taxonomía: %s', SQLERRM);
+    END;
+    BEGIN
+        UPDATE compras SET campana_taxonomia = 'MCO_ML_OTH-PF_ALL_PARQUE-FIJO_X' WHERE id = v_compra;
+        r := r || text 'FALLA  taxonomía de otro mercado: la aceptó';
+    EXCEPTION WHEN invalid_parameter_value THEN
+        r := r || text 'OK     taxonomía de otro mercado (MCO en una compra de MLC): rechazada';
+    END;
+    UPDATE compras SET campana_taxonomia = NULL, campana_id = v_alto WHERE id = v_compra;
+    SELECT campana_id INTO n FROM compras WHERE id = v_compra;
+    r := r || format('%s  campaña del glosario sin taxonomía: queda tal cual', CASE WHEN n = v_alto THEN 'OK   ' ELSE 'FALLA' END);
+    UPDATE compras SET campana_taxonomia = 'MLC_ML_BRD-E-GEN_ALL_CAMPANA-NUEVA_X' WHERE id = v_compra;
+    SELECT campana_id INTO n FROM compras WHERE id = v_compra;
+    SELECT count(*) INTO n2 FROM v_alertas WHERE compra_id = v_compra AND alerta = 'campaña fuera del glosario';
+    r := r || format('%s  taxonomía nueva que el glosario no tiene: sin campaña del glosario y con su alerta (%s)', CASE WHEN n IS NULL AND n2 = 1 THEN 'OK   ' ELSE 'FALLA' END, n2);
+    UPDATE compras SET campana_taxonomia = NULL, campana_id = NULL WHERE id = v_compra;   -- como estaba, para lo que sigue
+
     -- ============================================================== 1. ZB de MLC
     PERFORM set_config('request.jwt.claims', json_build_object('sub', a_zb, 'role', 'authenticated')::text, true);
     SET LOCAL ROLE authenticated;

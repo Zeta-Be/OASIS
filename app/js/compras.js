@@ -152,6 +152,136 @@ const Combo = {
     </div>`,
 };
 
+// ------------------------------------------------------------------ Campaña
+// La campaña de una compra: un desplegable con búsqueda entre las del mercado
+// (las taxonomías de sus compras y su glosario) y, al final, «Agregar campaña
+// nueva…» para escribir una taxonomía completa. La base la valida y la vincula
+// al glosario (sql/compras_campana.sql); aquí se valida el formato para avisar
+// antes de guardar.
+
+// Igual que fn_taxonomia_de_texto: {MERCADO}_ML_…_X, al menos cinco piezas.
+// Para buscar: sin tildes y en mayúsculas (Compras no carga tramos.js).
+const plano = (s) => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
+
+const reTaxonomia = (mercado) => new RegExp(`^${mercado}_ML_[A-Z0-9-]+(_[A-Z0-9-]+){3,}$`);
+
+// Nombre corto de una taxonomía: lo que va entre la cuarta pieza y el sufijo
+// (MLA_ML_OTH-PF_ALL_INTERIOR_X → INTERIOR; …_SUMMER-26_OOH → SUMMER-26).
+function nombreCorto(taxonomia) {
+  const p = (taxonomia || '').split('_');
+  return p.length >= 6 ? p.slice(4, -1).join('_') : (p[p.length - 2] || taxonomia || '');
+}
+
+const SelectorCampana = {
+  props: {
+    modelValue: Object,        // { campana_id, campana_taxonomia }
+    opciones: Array,           // [{ clave, campana_id, taxonomia, nombre }]
+    mercado: String,           // código, para validar la taxonomía nueva
+    compacto: Boolean,         // en la celda de la tabla
+    id: String,
+  },
+  emits: ['update:modelValue', 'nueva'],
+  data: () => ({ abierto: false, busqueda: '', agregando: false, nueva: '', error: '', pos: {} }),
+  computed: {
+    actual() {
+      const v = this.modelValue || {};
+      const o = (v.campana_taxonomia && this.opciones.find(x => x.taxonomia === v.campana_taxonomia))
+        || (!v.campana_taxonomia && v.campana_id && this.opciones.find(x => x.campana_id === v.campana_id && !x.taxonomia))
+        || (v.campana_id && this.opciones.find(x => x.campana_id === v.campana_id));
+      if (o) return o;
+      return { nombre: v.campana_taxonomia ? nombreCorto(v.campana_taxonomia) : '', taxonomia: v.campana_taxonomia || '' };
+    },
+    filtradas() {
+      const q = plano(this.busqueda);
+      if (!q) return this.opciones;
+      return this.opciones.filter(o => plano(o.nombre).includes(q) || plano(o.taxonomia).includes(q));
+    },
+  },
+  methods: {
+    ubicar() {
+      const r = this.$el.getBoundingClientRect();
+      const abajo = window.innerHeight - r.bottom > 320;
+      const ancho = Math.max(r.width, 300);
+      this.pos = {
+        left: `${Math.max(8, Math.min(r.left, window.innerWidth - ancho - 8))}px`,
+        width: `${ancho}px`,
+        ...(abajo ? { top: `${r.bottom}px` } : { bottom: `${window.innerHeight - r.top}px` }),
+      };
+    },
+    abrir() {
+      if (this.abierto) { this.cerrar(); return; }
+      this.ubicar();
+      this.busqueda = '';
+      this.agregando = false;
+      this.error = '';
+      this.abierto = true;
+      nextTick(() => { if (this.$refs.buscar) this.$refs.buscar.focus(); });
+    },
+    cerrar() { this.abierto = false; },
+    elegir(o) {
+      this.$emit('update:modelValue', { campana_id: o.campana_id || null, campana_taxonomia: o.taxonomia || null });
+      this.cerrar();
+    },
+    empezarNueva() {
+      this.agregando = true;
+      this.nueva = this.busqueda.trim().toUpperCase().startsWith(`${this.mercado}_`) ? this.busqueda.trim().toUpperCase() : `${this.mercado}_ML_`;
+      nextTick(() => { if (this.$refs.nueva) this.$refs.nueva.focus(); });
+    },
+    usarNueva() {
+      const tax = this.nueva.trim().toUpperCase();
+      if (!reTaxonomia(this.mercado).test(tax)) {
+        this.error = `Formato: ${this.mercado}_ML_TIPO_ALL_NOMBRE_X, en mayúsculas y sin espacios`;
+        return;
+      }
+      this.$emit('nueva', tax);   // queda disponible para las siguientes compras del mercado
+      this.$emit('update:modelValue', { campana_id: null, campana_taxonomia: tax });
+      this.cerrar();
+    },
+    fuera(ev) { if (this.abierto && !this.$el.contains(ev.target) && !(this.$refs.lista && this.$refs.lista.contains(ev.target))) this.cerrar(); },
+    tecla(ev) { if (ev.key === 'Escape' && this.abierto) { this.cerrar(); ev.stopPropagation(); } },
+    alDesplazar(ev) {
+      if (!this.abierto || (this.$refs.lista && this.$refs.lista.contains(ev.target))) return;
+      const r = this.$el.getBoundingClientRect();
+      if (r.bottom < 0 || r.top > window.innerHeight) this.cerrar(); else this.ubicar();
+    },
+  },
+  mounted() {
+    document.addEventListener('pointerdown', this.fuera);
+    window.addEventListener('scroll', this.alDesplazar, true);
+  },
+  unmounted() {
+    document.removeEventListener('pointerdown', this.fuera);
+    window.removeEventListener('scroll', this.alDesplazar, true);
+  },
+  template: `
+    <div class="selector-campana" :class="{ abierto, compacto }" @keydown="tecla">
+      <button type="button" class="sc-boton" :id="id" @click="abrir" :aria-expanded="abierto"
+              :title="actual.taxonomia || actual.nombre">
+        <span class="sc-nombre">{{ actual.nombre || 'Elige la campaña' }}</span>
+        <span v-if="!compacto && actual.taxonomia" class="sc-tax mono">{{ actual.taxonomia }}</span>
+      </button>
+      <div v-if="abierto" ref="lista" class="sc-lista" :style="pos">
+        <input ref="buscar" v-model="busqueda" class="sc-buscar" placeholder="Buscar campaña o taxonomía…" autocomplete="off">
+        <ul>
+          <li v-for="o in filtradas" :key="o.clave" :class="{ elegido: o === actual }" @mousedown.prevent="elegir(o)">
+            <span class="sc-nombre">{{ o.nombre }}</span>
+            <span class="sc-tax mono">{{ o.taxonomia || 'del glosario' }}</span>
+          </li>
+          <li v-if="!filtradas.length" class="sin">Ninguna coincide.</li>
+        </ul>
+        <div class="sc-pie">
+          <button v-if="!agregando" type="button" class="enlace" @mousedown.prevent="empezarNueva">Agregar campaña nueva…</button>
+          <form v-else class="sc-nueva" @submit.prevent="usarNueva">
+            <input ref="nueva" v-model="nueva" class="mono" :class="{ err: error }" autocomplete="off"
+                   :placeholder="mercado + '_ML_OTH-PF_ALL_NOMBRE_X'" @input="error = ''">
+            <button type="submit" class="btn p">Usar</button>
+          </form>
+          <div v-if="error" class="campo-error">{{ error }}</div>
+        </div>
+      </div>
+    </div>`,
+};
+
 // ------------------------------------------------------------------ Filas
 
 let contadorFilas = 0;
@@ -166,6 +296,7 @@ function aPayload(r) {
     codigo:             r.codigo,
     cliente:            r.cliente,
     campana_id:         r.campana_id,
+    campana_taxonomia:  r.campana_taxonomia || null,
     proveedor_id:       r.proveedor_id,
     tipo_compra:        r.tipo_compra,
     medio:              r.medio,
@@ -254,7 +385,7 @@ function validar(r, ctx) {
 
   // Solo una compra nueva necesita campaña para guardarse. Una cargada del
   // Sheets sin campaña reconocida se corrige desde Alertas y no bloquea la fila.
-  if (!r.id && !r.campana_id) e.campana_id = 'El mercado no tiene campaña de parque fijo configurada';
+  if (!r.id && !r.campana_id && !r.campana_taxonomia) e.campana_id = 'Elige la campaña';
 
   if (!r.proveedor_id) e.proveedor_id = obligatorio;
   else {
@@ -323,11 +454,12 @@ async function iniciar() {
   pintarBarra(document.getElementById('barra'), usuario, 'compras');
 
   createApp({
-    components: { CeldaNum, SeleccionMultiple, Combo },
+    components: { CeldaNum, SeleccionMultiple, Combo, SelectorCampana },
 
     data: () => ({
       ENUMS,
       catalogos: { tiposCompra: [], tiposCosto: [] },
+      campanasNuevas: {},      // mercado_id -> taxonomías escritas en esta sesión
       usuario,
       cargando: true,
       errorCarga: '',
@@ -366,6 +498,12 @@ async function iniciar() {
       opcionesMes() { return this.meses.map(m => ({ valor: m, etiqueta: this.nombreMes(m) })); },
       opcionesTipoCosto() {
         return tiposCostoPara(this.catalogos.tiposCosto, this.codigoFiltroMercado).map(t => ({ valor: t, etiqueta: t }));
+      },
+      // Opciones de campaña por mercado; se arman una vez (la tabla tiene miles de filas).
+      campanasPorMercado() {
+        const salida = new Map();
+        for (const m of this.mercados) salida.set(m.id, this.armarOpcionesCampana(m.id));
+        return salida;
       },
       codigoFiltroMercado() { const m = this.mercadosPorId.get(this.filtros.mercado); return m ? m.codigo : ''; },
       opcionesProveedor() {
@@ -489,6 +627,49 @@ async function iniciar() {
       nombreProveedor(id) { const p = this.proveedoresPorId.get(id); return p ? p.nombre : ''; },
       nombreMes(k) { const [y, m] = k.split('-'); return `${MESES[Number(m) - 1]} ${y}`; },
       codigoMercado(id) { const m = this.mercadosPorId.get(id); return m ? m.codigo : '?'; },
+      // ---- campaña
+      opcionesCampana(mercadoId) { return this.campanasPorMercado.get(mercadoId) || []; },
+      // La taxonomía más usada para una campaña del glosario en el mercado.
+      taxonomiaDe(campanaId, mercadoId) {
+        const n = new Map();
+        for (const r of this.filas) {
+          if (r.mercado_id === mercadoId && r.campana_id === campanaId && r.campana_taxonomia) {
+            n.set(r.campana_taxonomia, (n.get(r.campana_taxonomia) || 0) + 1);
+          }
+        }
+        return [...n.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+      },
+      agregarCampana(mercadoId, tax) {
+        const lista = this.campanasNuevas[mercadoId] || [];
+        if (!lista.includes(tax)) this.campanasNuevas = { ...this.campanasNuevas, [mercadoId]: [...lista, tax] };
+      },
+      valorCampana(r) { return { campana_id: r.campana_id, campana_taxonomia: r.campana_taxonomia }; },
+      // En la tabla: cambia la campaña y guarda como cualquier otra celda.
+      cambiarCampana(r, v) {
+        r.campana_id = v.campana_id;
+        r.campana_taxonomia = v.campana_taxonomia;
+        if (r.id) this.guardar(r);
+      },
+
+      // Las campañas de un mercado: las taxonomías que ya tienen sus compras, las
+      // escritas en esta sesión y el glosario del mercado (lo que no esté ya como
+      // taxonomía). Por nombre; la de parque fijo se preselecciona aparte.
+      armarOpcionesCampana(mercadoId) {
+        const glosario = new Map(this.campanas.filter(c => c.mercado_id === mercadoId).map(c => [c.id, c.nombre_unico]));
+        const porTax = new Map();
+        const conTax = new Set();
+        const agregar = (tax, campanaId) => {
+          if (porTax.has(tax)) return;
+          porTax.set(tax, { clave: `T|${tax}`, campana_id: campanaId || null, taxonomia: tax,
+            nombre: (campanaId && glosario.get(campanaId)) || nombreCorto(tax) });
+          if (campanaId) conTax.add(campanaId);
+        };
+        for (const r of this.filas) if (r.mercado_id === mercadoId && r.campana_taxonomia) agregar(r.campana_taxonomia, r.campana_id);
+        for (const tax of this.campanasNuevas[mercadoId] || []) agregar(tax, null);
+        const solas = [...glosario.entries()].filter(([id]) => !conTax.has(id))
+          .map(([id, nombre]) => ({ clave: `C|${id}`, campana_id: id, taxonomia: null, nombre }));
+        return [...porTax.values(), ...solas].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+      },
       // Solo los tipos de costo del mercado de la compra (COLOCACION, solo MLA).
       tiposCostoDe(r) { return tiposCostoPara(this.catalogos.tiposCosto, this.codigoMercado(r.mercado_id), r.tipo_costo); },
       campanaOoh(mercadoId) { const m = this.mercadosPorId.get(mercadoId); return m ? m.campana_ooh_id : null; },
@@ -600,9 +781,11 @@ async function iniciar() {
           const res = await sb.from('compras')
             .update({ ...cambios, actualizado_en: new Date().toISOString() })
             .eq('id', r.id)
-            .select('id');
+            .select('id, campana_id, campana_taxonomia');
           error = res.error;
           if (!error && res.data.length === 0) error = { code: '42501' };
+          // La base vincula la taxonomía con su campaña del glosario: se toma lo suyo.
+          if (!error) Object.assign(r, { campana_id: res.data[0].campana_id, campana_taxonomia: res.data[0].campana_taxonomia });
         } catch (e) {
           error = e;
         }
@@ -612,7 +795,7 @@ async function iniciar() {
           r._estado = { clase: 'err', texto: 'error', detalle: mensajeError(error) };
           console.error('No se guardó la compra', r.codigo, error);
         } else {
-          r._snap = snap;
+          r._snap = JSON.stringify(aPayload(r));
           r.formato = payload.formato;
           r._formatoGuardado = payload.formato;
           const estado = { clase: 'ok', texto: 'guardado' };
@@ -646,6 +829,8 @@ async function iniciar() {
       async abrirPanel() {
         if (!this.puedeCrear) return;
         this.borrador = borradorNuevo(this.filtros.mercado, this.campanaOoh(this.filtros.mercado));
+        // Parque fijo preseleccionada, con la taxonomía que ya usan sus compras.
+        this.borrador.campana_taxonomia = this.taxonomiaDe(this.borrador.campana_id, this.filtros.mercado);
         await nextTick();
         const primero = document.querySelector(`${PANEL_ACTIVO} #p-cliente`);
         if (primero) primero.focus();
