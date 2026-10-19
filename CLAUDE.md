@@ -18,6 +18,7 @@ El objetivo del sistema es saber cuánta plata corresponde a cada material, día
 | Base de datos | Supabase, proyecto `tjlteqhqctdtlbppigdi` (Postgres), conectado por MCP en modo lectura |
 | Esquema original | `oasis_v2_esquema.sql` (vocabulario viejo; ver `migracion_vocabulario.sql`) |
 | Carga desde Sheets | `cargar_oasis.py` — lee el Sheets de cada mercado en vivo y hace upsert; los IDs de los Sheets están en `mercados.json`. Ver «Cómo cargar datos» |
+| Inversión precalculada | `sql/inversion_precalculada.sql` (tabla `inversion_diaria`, `fn_recalcular_inversion*`, triggers, `fn_inversion_filtrada`, `fn_inversion_resumen`); pruebas en `sql/inversion_pruebas.sql`. Ver «Inversión precalculada» en Modelo de datos |
 | Varios mercados | `sql/mercados_enum.sql` (COLOCACION; va primero y aparte) y `sql/mercados.sql` (moneda, campaña por compra, `campanas_alias`, columnas que admiten vacío, vistas, alertas nuevas, `fn_asignar_taxonomia`); pruebas en `sql/mercados_pruebas.sql` (se revierten solas). Ver «Varios mercados» |
 | Contraseña olvidada de un ADMIN | `cambiar_clave.py` — la cambia directo en Auth por la conexión de `.env` (ver «Alta de usuarios») |
 | Credenciales Google | `credenciales_google.json` — cuenta de servicio, nunca al repositorio |
@@ -53,7 +54,13 @@ Enums: `tipo_costo` (EXHIBICION, PRODUCCION, IMPUESTOS, COLOCACION), `tipo_compr
 
 Vistas: `v_materiales_externos` (la única para PROVEEDOR y AGENCIA; ver «Acceso externo»), `v_materiales` (nivel material, con taxonomía; desde `sql/mercados.sql` también mercado_id, moneda y campana_grupo al final), `v_inversion_diaria`, `v_inversion_semanal`, `v_inversion_total`, `v_alertas` (alerta, referencia y, para enlazar, mercado, compra_id, material_id; al final mercado_id y detalle), `v_cuadre` (cruza por código **y** mercado), `v_sub_campanas` (glosario de cada mercado sin su campaña OOH; para elegir sub campaña en Materiales).
 
-**La interfaz lee las vistas de inversión por `fn_inversion_diaria()`, `fn_inversion_semanal()` y `fn_inversion_total()`**, nunca directo. Con RLS el planificador estima mal cuántas compras ve el usuario y la vista pasa de 0,5 s a 14 s; `authenticated` corta a los 8 s. Las funciones devuelven la vista tal cual, con permisos del usuario, y solo apagan los nested loops. BI (sin RLS) no se ve afectado. Si se agrega otra lectura de esas vistas desde la app, va por estas funciones.
+**Inversión precalculada** (`sql/inversion_precalculada.sql`). El reparto ya calculado vive en la tabla `inversion_diaria`: una fila por material y día, con material_id, fecha, compra_id, mercado_id, costo_proyectado y pct_participacion. Guarda solo lo caro de calcular. Lo descriptivo (proveedor, campaña, formato, moneda) y lo que depende de la fecha (estado, costo ejecutado) lo pone `v_inversion_diaria` al leer, así que no queda viejo si se unifica un proveedor, cambia el glosario o pasa un día.
+- **Quién la mantiene:** `fn_recalcular_inversion(compra)` reescribe solo las filas de esa compra. La llaman triggers en `materiales` (alta, baja, cambio de fechas o de compra) y en `compras` (cambio de valor o de mercado); una compra borrada se lleva sus filas en cascada. `cargar_oasis.py` pone `oasis.sin_recalculo = 'on'` mientras escribe y al final llama a `fn_recalcular_inversion_mercado`, una vez por mercado. **Si algo escribe materiales o compras con esa marca encendida y no recalcula, la inversión queda vieja.** Para rehacer todo: `SELECT fn_recalcular_inversion_mercado(id) FROM mercados;`.
+- **Acceso:** RLS en la tabla: internos de sus mercados (ADMIN y LECTURA ven todos); externos, 0 filas. BI se conecta como postgres y no se ve afectado.
+- **La pantalla pide agregados, no filas:** `fn_inversion_resumen(mercado, filtros)` devuelve en un jsonb los KPIs, los periodos (por mes o por semana), las barras por sub campaña y por proveedor, y las opciones de los filtros. `fn_inversion_filtrada(mercado, filtros)` devuelve las filas filtradas: la Diaria la pagina de a 500 y el CSV la baja en lotes de 1.000. Total y Semanal se traen completas para el mercado por `fn_inversion_total()` y `fn_inversion_semanal()`, que siguen existiendo: devuelven la vista tal cual con los nested loops apagados. Si se agrega otra lectura de inversión desde la app, va por estas funciones.
+- **Tiempos** (19-10-2026, base real, cinco mercados, ADMIN por la API): resumen 0,3–0,7 s; Total 0,7–1,1 s; Semanal 1,0–1,2 s; una página de la Diaria 0,2–0,6 s; un lote de CSV 0,5 s. BI, la diaria completa de los cinco mercados (57.776 filas): 0,15 s. Meta: ninguna consulta de la pantalla por encima de 2 s.
+- **«Costo en el mes»:** en la pestaña Total, con filtro de mes, la tabla agrega esta columna junto a «Costo proyectado» (el material entero). Es lo que suma cada material dentro de los meses filtrados, y sale de `fn_inversion_resumen` (`por_material`), con los mismos filtros que los KPIs. El total de la tabla va bajo esa columna y cuadra con los KPIs; los totales del material entero quedan en blanco.
+- **Pruebas:** `sql/inversion_pruebas.sql` recalcula todo desde cero y lo compara contra el SQL de la vista de antes (mismo costo por material y día, misma suma por compra), revisa los triggers, el contrato con BI y el acceso. Se revierte solo.
 
 **Campaña de la compra.** Es de cada compra: la columna CAMPAÑA del Flow, que debe ser una taxonomía (`MLC_ML_OTH-PF_ALL_ALTO-IMPACTO_X`). Se guarda en tres campos: `compras.campana_texto` (tal cual), `campana_taxonomia` (válida, del Flow o de `campanas_alias`) y `campana_id` (la campaña del glosario, si existe). Las reglas están en la base: `fn_taxonomia_de_texto` y `fn_campana_de_taxonomia`; las usan la carga y la corrección en Alertas. Las campañas OTH-PF (PARQUE-FIJO, ALTO-IMPACTO, PLANTA-FIJA, REGIONES, INTERIOR) cuentan como una sola, «PARQUE FIJO», para filtros (`campana_grupo`). `mercados.campana_ooh_id` ya solo es la campaña con la que la pantalla Compras arranca una compra nueva (MCO y MLU PARQUE-FIJO, MLA PARQUE-FIJO, MLC ALTO-IMPACTO, MLM PLANTA-FIJA); editar una compra nunca le cambia la campaña.
 
@@ -129,7 +136,7 @@ La IA propone, el humano confirma; nada se unifica sin clic. Card «Posibles dup
 
 ## Reglas de negocio — no cambiar sin consultar
 
-**Reparto de inversión.** El valor de una compra se reparte entre sus materiales según los días de calendario que ocupó cada uno. Cuando varios materiales corren el mismo día —lo normal en pantallas digitales—, el costo de ese día se divide en partes iguales entre los activos. Está en `v_inversion_diaria`. Verificación: sumar el costo de una compra por fecha da siempre `valor_total / días calendario`, constante.
+**Reparto de inversión.** El valor de una compra se reparte entre sus materiales según los días de calendario que ocupó cada uno. Cuando varios materiales corren el mismo día —lo normal en pantallas digitales—, el costo de ese día se divide en partes iguales entre los activos. Está en `fn_recalcular_inversion_compras` (que llena la tabla `inversion_diaria`) y se lee por `v_inversion_diaria`. Verificación: sumar el costo de una compra por fecha da siempre `valor_total / días calendario`, constante.
 
 **Nunca repartir por días-material.** Ese fue el modelo original y estaba mal: con materiales simultáneos cuenta el mismo día varias veces.
 
@@ -145,7 +152,7 @@ La IA propone, el humano confirma; nada se unifica sin clic. Card «Posibles dup
 
 Las vistas de inversión traen las dos lecturas: `month` (y `year`, `week`, `date`) es el mes de ejecución; `mes_compra` (primer día del mes de `compras.fecha_inicio`) reproduce la lectura del Flow. Verificación: `SELECT mes_compra, sum(costo_proyectado) FROM v_inversion_diaria GROUP BY 1` coincide, salvo redondeo a centavos, con `sum(valor_total)` de las compras con materiales fechados agrupadas por `date_trunc('month', fecha_inicio)`. La lectura principal es el mes de ejecución; mes de compra es auxiliar, para conciliar (ver Contrato con BI). En Inversión, el selector «Ver por: mes de ejecución / mes de compra» arranca siempre en mes de ejecución y cambia el filtro de mes (exacto en las tres pestañas con mes de compra), los KPIs, el gráfico por mes y la pestaña Semanal (con mes de compra junta las semanas que el cambio de mes partía en dos). Al comparar con el Flow o con una factura, usar mes de compra.
 
-**Las vistas se encadenan.** Semanal y total se agregan desde la diaria. No duplicar lógica.
+**Las vistas se encadenan.** Semanal y total se agregan desde la diaria, y la diaria lee la tabla precalculada. `v_cuadre` suma la tabla directo. No duplicar la lógica del reparto: vive en un solo lugar, `fn_recalcular_inversion_compras`.
 
 **Código de material.** `compra.codigo + '-' + letra` donde la letra es la secuencia (1=A). La letra no implica orden cronológico.
 
@@ -167,6 +174,7 @@ Columnas agregadas después, siempre al final para no mover las anteriores: `mes
 
 ```sql
 SELECT * FROM v_cuadre;    -- debe salir vacío: compras donde la suma no da el valor total
+                           -- (hoy, salvo la 371 de MLA: material de 365 días en una compra de enero)
 SELECT * FROM v_alertas;   -- pendientes de captura
 ```
 

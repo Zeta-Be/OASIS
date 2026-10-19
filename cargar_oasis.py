@@ -921,6 +921,8 @@ class Carga:
               f" · {s['compras']} entran")
         print(f"  Materiales:  {s['materiales_leidos']:>5} leídos en el Tracking · {s['materiales']} entran")
         print(f"  Proveedores: {s['proveedores']:>5} · glosario: {s['campanas']} campañas (todos los mercados)")
+        if s["inversion"]:
+            print(f"  Inversión:   {s['inversion']:>5} filas diarias recalculadas")
 
         if self.notas:
             print("\n  Normalizado en silencio")
@@ -967,6 +969,13 @@ def cargar_mercado(mercado, wb, dry_run, ensayo_sql):
             sql = open(ensayo_sql, encoding="utf-8").read()
             sql = re.sub(r"^\s*(BEGIN|COMMIT);\s*$", "", sql, flags=re.M)
             conn.cursor().execute(sql)
+        # La inversión precalculada (sql/inversion_precalculada.sql) se recalcula
+        # una vez al final, no una vez por cada material que se escribe.
+        cur = conn.cursor()
+        cur.execute("SELECT to_regproc('public.fn_recalcular_inversion_mercado') IS NOT NULL")
+        precalculada = cur.fetchone()[0]
+        if precalculada:
+            cur.execute("SELECT set_config('oasis.sin_recalculo', 'on', true)")
         carga = Carga(conn, wb, mercado, dry_run)
         carga.campanas()
         utiles = carga.filas_flow()
@@ -975,6 +984,10 @@ def cargar_mercado(mercado, wb, dry_run, ensayo_sql):
         carga.cerrar_proveedores()
         carga.materiales()
         carga.huerfanos()
+        if precalculada:
+            cur.execute("SELECT set_config('oasis.sin_recalculo', 'off', true)")
+            cur.execute("SELECT public.fn_recalcular_inversion_mercado(%s::smallint)", (carga.mercado_id,))
+            carga.stats["inversion"] = cur.fetchone()[0]
         carga.alertas()
 
         if dry_run:

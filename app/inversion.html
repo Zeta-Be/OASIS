@@ -60,7 +60,7 @@
 
     <!-- Gráficos: desde la diaria filtrada. Barra completa = proyectado; la parte
          ámbar es lo ejecutado a la fecha de corte. -->
-    <section class="card graficos" :class="{ refrescando: datos.diaria.cargando && datos.diaria.filas.length }">
+    <section class="card graficos" :class="{ refrescando: resumen.cargando && resumen.datos }">
       <div class="card-cab">
         <h2>Resumen</h2>
         <div class="leyenda" aria-label="Leyenda">
@@ -69,13 +69,13 @@
         </div>
         <span class="nota-graficos">Barra completa = proyectado · M = millones de {{ moneda }}</span>
         <div class="acciones-cab">
-          <button class="btn" type="button" :disabled="!datos.diaria.filas.length"
+          <button class="btn" type="button" :disabled="!resumen.datos"
                   @click="verTablasGraficos = !verTablasGraficos">{{ verTablasGraficos ? 'Ver gráficos' : 'Ver como tabla' }}</button>
         </div>
       </div>
 
-      <div v-if="datos.diaria.error" class="vacio">{{ datos.diaria.error }}</div>
-      <div v-else-if="!datos.diaria.filas.length" class="vacio">Cargando gráficos…</div>
+      <div v-if="resumen.error" class="vacio">{{ resumen.error }}</div>
+      <div v-else-if="!resumen.datos" class="vacio">Cargando gráficos…</div>
       <div v-else-if="graficos.vacio" class="vacio">Sin inversión con estos filtros.</div>
 
       <div v-else class="graficos-grilla" @mouseleave="ocultarGlobo">
@@ -159,8 +159,10 @@
           Ejecutado a: {{ corte.cargado ? corteTexto : '…' }}<span v-if="corte.cargado && !corte.valor" class="hoy">hoy</span>
         </span>
         <div class="acciones-cab">
-          <button class="btn" type="button" :disabled="actual.cargando || !filtradas.length"
-                  :title="`Baja las filas filtradas de ${PESTANAS[pestana].vista}`" @click="exportarCsv">Exportar CSV</button>
+          <button class="btn" type="button" :disabled="actual.cargando || !filasTotal || !!exportando"
+                  :title="`Baja las filas filtradas de ${PESTANAS[pestana].vista}`" @click="exportarCsv">
+            {{ exportando ? `Exportando… ${fmtEntero(exportando.hechas)} de ${fmtEntero(exportando.total)}` : 'Exportar CSV' }}
+          </button>
         </div>
       </div>
 
@@ -168,19 +170,19 @@
       <div class="kpis">
         <div class="kpi">
           <div class="kpi-et">Costo proyectado · {{ moneda }}</div>
-          <div class="kpi-val mono">{{ actual.cargando ? '…' : pesos(sumas.proyectado) }}</div>
+          <div class="kpi-val mono">{{ !resumen.datos ? '…' : pesos(kpis.proyectado) }}</div>
         </div>
         <div class="kpi">
           <div class="kpi-et">Costo ejecutado · {{ moneda }}</div>
-          <div class="kpi-val mono">{{ actual.cargando ? '…' : pesos(sumas.ejecutado) }}</div>
+          <div class="kpi-val mono">{{ !resumen.datos ? '…' : pesos(kpis.ejecutado) }}</div>
         </div>
         <div class="kpi">
           <div class="kpi-et">Por ejecutar · {{ moneda }}</div>
-          <div class="kpi-val mono">{{ actual.cargando ? '…' : pesos(sumas.porEjecutar) }}</div>
+          <div class="kpi-val mono">{{ !resumen.datos ? '…' : pesos(kpis.porEjecutar) }}</div>
         </div>
         <div class="kpi">
           <div class="kpi-et">Filas</div>
-          <div class="kpi-val mono">{{ actual.cargando ? '…' : fmtEntero(filtradas.length) }}</div>
+          <div class="kpi-val mono">{{ actual.cargando ? '…' : fmtEntero(filasTotal) }}</div>
         </div>
       </div>
 
@@ -206,11 +208,13 @@
               <td v-for="col in columnas" :key="col" :class="esNum(col) ? 'mono num' : 'texto'">{{ celda(r, col) }}</td>
             </tr>
           </tbody>
-          <tfoot v-if="filtradas.length">
+          <tfoot v-if="filasTotal">
             <tr>
               <td :colspan="colsAntesDeSuma">Total</td>
               <template v-for="col in columnas.slice(colsAntesDeSuma)" :key="col">
-                <td v-if="col === 'costo_proyectado'" class="mono num destacado">{{ pesos(sumas.proyectado) }}</td>
+                <td v-if="col === 'costo_en_mes'" class="mono num destacado">{{ pesos(sumas.enMes) }}</td>
+                <td v-else-if="conCostoEnMes"></td>
+                <td v-else-if="col === 'costo_proyectado'" class="mono num destacado">{{ pesos(sumas.proyectado) }}</td>
                 <td v-else-if="col === 'costo_ejecutado'" class="mono num destacado">{{ pesos(sumas.ejecutado) }}</td>
                 <td v-else></td>
               </template>
