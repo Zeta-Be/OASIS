@@ -131,6 +131,7 @@ async function iniciar() {
       // Agregados de fn_inversion_resumen: KPIs, gráficos y opciones de los filtros.
       resumen: { datos: null, cargando: true, error: '' },
       exportando: null,                          // { hechas, total } mientras baja la Diaria
+      catalogoCosto: [],                         // tipos_costo, con sus mercados
       pestana: 'total',
       VER_POR,
       // Siempre arranca en mes de ejecución, la lectura principal; no se recuerda la
@@ -190,7 +191,7 @@ async function iniciar() {
         });
       },
       opcionesProveedor() { return this.lista(this.opcionesDe.proveedores); },
-      opcionesTipoCosto() { return ENUMS.tipo_costo.map(t => ({ valor: t, etiqueta: t })); },
+      opcionesTipoCosto() { return tiposCostoPara(this.catalogoCosto, this.codigoFiltro).map(t => ({ valor: t, etiqueta: t })); },
       opcionesSubCampana() {
         return [{ valor: SIN_SUB_INV, etiqueta: 'Sin sub campaña' }, ...this.lista(this.opcionesDe.sub_campanas)];
       },
@@ -545,12 +546,14 @@ async function iniciar() {
 
       async cargar() {
         try {
-          const [mercados, mis, propios, corte] = await Promise.all([
+          const [mercados, mis, propios, corte, catalogos] = await Promise.all([
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre, moneda').order('id')),
             sb.rpc('fn_mis_mercados'),
             traerTodo(() => sb.from('usuario_mercados').select('mercado_id').eq('usuario_id', this.usuario.id).order('mercado_id')),
             sb.from('configuracion').select('valor').eq('clave', 'fecha_corte').maybeSingle(),
+            cargarCatalogos(),
           ]);
+          this.catalogoCosto = catalogos.tiposCosto;
           if (mis.error) throw mis.error;
           if (corte.error) throw corte.error;
           this.mercados = mercados;

@@ -18,6 +18,7 @@ El objetivo del sistema es saber cuánta plata corresponde a cada material, día
 | Base de datos | Supabase, proyecto `tjlteqhqctdtlbppigdi` (Postgres), conectado por MCP en modo lectura |
 | Esquema original | `oasis_v2_esquema.sql` (vocabulario viejo; ver `migracion_vocabulario.sql`) |
 | Carga desde Sheets | `cargar_oasis.py` — lee el Sheets de cada mercado en vivo y hace upsert; los IDs de los Sheets están en `mercados.json`. Ver «Cómo cargar datos» |
+| Catálogos | `sql/catalogos.sql` (tablas `tipos_compra` y `tipos_costo`, columnas de compras a texto, `fn_validar_tipo_costo`); las pruebas están en `sql/mercados_pruebas.sql` |
 | Inversión precalculada | `sql/inversion_precalculada.sql` (tabla `inversion_diaria`, `fn_recalcular_inversion*`, triggers, `fn_inversion_filtrada`, `fn_inversion_resumen`); pruebas en `sql/inversion_pruebas.sql`. Ver «Inversión precalculada» en Modelo de datos |
 | Varios mercados | `sql/mercados_enum.sql` (COLOCACION; va primero y aparte) y `sql/mercados.sql` (moneda, campaña por compra, `campanas_alias`, columnas que admiten vacío, vistas, alertas nuevas, `fn_asignar_taxonomia`); pruebas en `sql/mercados_pruebas.sql` (se revierten solas). Ver «Varios mercados» |
 | Contraseña olvidada de un ADMIN | `cambiar_clave.py` — la cambia directo en Auth por la conexión de `.env` (ver «Alta de usuarios») |
@@ -48,7 +49,11 @@ configuracion                    (clave fecha_corte: nula = hoy)
 
 Siete mercados: MCO, MLB, MLM, MLA, MLC, MLU, MPE, cada uno con su moneda (`mercados.moneda`: COP, BRL, MXN, ARS, CLP, UYU, PEN). Hay datos de MCO, MLC, MLU, MLA y MLM.
 
-Enums: `tipo_costo` (EXHIBICION, PRODUCCION, IMPUESTOS, COLOCACION), `tipo_compra` (DIRECTO, BONIFICADO, FACTURABLE, PAGO ANTICIPADO), `medio` (OOH, DOOH), `rol` (PLANNING, ZB, AGENCIA, PROVEEDOR, LECTURA, ADMIN). Un valor del Sheets que no está en su enum entra vacío, con el texto original en `compras.fuera_de_catalogo` y la alerta «valor fuera de catálogo».
+Catálogos en tablas (`sql/catalogos.sql`), editables sin migración por un ADMIN:
+- `tipos_compra`: DIRECTO, BONIFICADO, PAGO ANTICIPADO.
+- `tipos_costo (tipo, mercados)`: EXHIBICION, PRODUCCION e IMPUESTOS en todos los mercados (`mercados` vacío); COLOCACION solo en `{MLA}`. Para habilitarlo en otro mercado: `UPDATE tipos_costo SET mercados = '{MLA,MLC}' WHERE tipo = 'COLOCACION'`.
+
+Las columnas `compras.tipo_compra` y `compras.tipo_costo` son texto, con llave foránea a su catálogo. Un trigger (`fn_validar_tipo_costo`) rechaza un tipo de costo que no se use en el mercado de la compra. Compras muestra en el desplegable solo los del mercado. Siguen siendo enums `medio` (OOH, DOOH) y `rol` (PLANNING, ZB, AGENCIA, PROVEEDOR, LECTURA, ADMIN). Un valor del Sheets que no está en su catálogo, o no se permite en ese mercado, entra vacío, con el texto original en `compras.fuera_de_catalogo` y la alerta «valor fuera de catálogo». FACTURABLE era lo mismo que DIRECTO: se migró y la carga lo traduce en silencio (`ALIAS_CATALOGO` en `cargar_oasis.py`).
 
 **Rol LECTURA.** Consulta interna sin captura: jefes, otras áreas, gente nueva en planning. Ve las cuatro pantallas con los datos de **todos** los mercados (igual que ADMIN; `fn_mis_mercados()`), filtra y exporta; no escribe nada. Sus `usuario_mercados` solo deciden con qué mercado abre. No es el rol de BI: BI se conectará a las vistas directamente, sin usuario en la app, y eso se define en la Fase 4.
 
@@ -205,7 +210,7 @@ Los IDs de los Sheets están en `mercados.json`. Cada mercado va en su propia tr
 
 **Sin tipo de costo** no hay fórmula: la compra vale lo que diga el Sheets (0 si no dice nada) y se marca `valor_total_manual`. **Fechas:** las dos o ninguna; una compra o un material con fechas invertidas entra sin fechas, y el reporte muestra las originales para corregirlas en el Sheets.
 
-**Catálogos ampliados** (`sql/mercados_enum.sql`): tipo de costo COLOCACION (MLA) y tipo de compra FACTURABLE y PAGO ANTICIPADO (MLM). Al 19 de octubre de 2026 eran los únicos valores de los cinco Flows que faltaban. Un valor nuevo de un enum va siempre en un archivo aparte, que se confirma antes de usarlo: Postgres no deja usarlo en la misma transacción que lo agrega.
+**Catálogos:** tipo de compra y tipo de costo viven en tablas (`sql/catalogos.sql`, ver «Modelo de datos»). Un tipo nuevo o un cambio de mercados es un `INSERT` o un `UPDATE`, sin migración. `sql/mercados_enum.sql` es historia: agregó COLOCACION, FACTURABLE y PAGO ANTICIPADO a los enums de entonces, que `sql/catalogos.sql` reemplazó por tablas.
 
 ## Varios mercados
 

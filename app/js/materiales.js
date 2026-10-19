@@ -79,6 +79,7 @@ async function iniciar() {
 
     data: () => ({
       ENUMS,
+      catalogoCosto: [],       // tipos_costo, con sus mercados
       usuario,
       cargando: true,
       errorCarga: '',
@@ -140,7 +141,10 @@ async function iniciar() {
         return [...s].sort();
       },
       opcionesMes() { return this.meses.map(m => ({ valor: m, etiqueta: this.nombreMes(m) })); },
-      opcionesTipoCosto() { return ENUMS.tipo_costo.map(t => ({ valor: t, etiqueta: t })); },
+      opcionesTipoCosto() {
+        const m = this.mercadosPorId.get(this.filtros.mercado);
+        return tiposCostoPara(this.catalogoCosto, m && m.codigo).map(t => ({ valor: t, etiqueta: t }));
+      },
       opcionesProveedor() {
         const lista = this.filtros.mercado
           ? this.proveedores.filter(p => p.mercado_id === this.filtros.mercado)
@@ -781,7 +785,7 @@ async function iniciar() {
 
       async cargar() {
         try {
-          const [mercados, mis, propios, proveedores, subs, compras, materiales, taxonomias, evidencias] = await Promise.all([
+          const [mercados, mis, propios, proveedores, subs, compras, materiales, taxonomias, evidencias, catalogos] = await Promise.all([
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre, moneda').order('id')),
             sb.rpc('fn_mis_mercados'),
             traerTodo(() => sb.from('usuario_mercados').select('mercado_id').eq('usuario_id', this.usuario.id).order('mercado_id')),
@@ -791,7 +795,9 @@ async function iniciar() {
             traerTodo(() => sb.from('materiales').select(COLUMNAS_MATERIAL).order('id')),
             traerTodo(() => sb.from('v_materiales').select('material_id, taxonomia').order('material_id')),
             cargarEvidencias(),
+            cargarCatalogos(),
           ]);
+          this.catalogoCosto = catalogos.tiposCosto;
           if (mis.error) throw mis.error;
 
           this.mercados = mercados;

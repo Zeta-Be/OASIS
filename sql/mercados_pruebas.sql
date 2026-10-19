@@ -100,6 +100,33 @@ BEGIN
             fila.codigo, round(fila.repartido, 2), round(fila.valor, 2), fila.moneda, round(fila.repartido - fila.valor, 2));
     END LOOP;
 
+    -- ============================================================== Catálogos (sql/catalogos.sql)
+    r := r || text '--- Catálogos de tipo de compra y tipo de costo';
+    SELECT string_agg(tipo, ',' ORDER BY orden) INTO t FROM tipos_compra;
+    SELECT count(*) INTO n FROM compras WHERE tipo_compra = 'FACTURABLE';
+    r := r || format('%s  tipos de compra: %s; compras con FACTURABLE: %s', CASE WHEN t = 'DIRECTO,BONIFICADO,PAGO ANTICIPADO' AND n = 0 THEN 'OK   ' ELSE 'FALLA' END, t, n);
+    r := r || format('%s  los enums de tipo de compra y de costo ya no existen', CASE WHEN to_regtype('tipo_compra_enum') IS NULL AND to_regtype('tipo_costo_enum') IS NULL THEN 'OK   ' ELSE 'FALLA' END);
+    BEGIN
+        UPDATE compras SET tipo_compra = 'FACTURABLE' WHERE id = (SELECT min(id) FROM compras WHERE mercado_id = v_mco);
+        r := r || text 'FALLA  FACTURABLE: la base lo aceptó';
+    EXCEPTION WHEN foreign_key_violation THEN
+        r := r || text 'OK     FACTURABLE: la base lo rechaza (no está en el catálogo)';
+    END;
+    BEGIN
+        UPDATE compras SET tipo_costo = 'COLOCACION' WHERE id = (SELECT min(id) FROM compras WHERE mercado_id = v_mco);
+        r := r || text 'FALLA  COLOCACION en MCO: la base la aceptó';
+    EXCEPTION WHEN check_violation THEN
+        r := r || format('OK     COLOCACION en MCO: %s', SQLERRM);
+    END;
+    UPDATE compras SET tipo_costo = 'COLOCACION' WHERE id = (SELECT min(c.id) FROM compras c JOIN mercados m ON m.id = c.mercado_id WHERE m.codigo = 'MLA');
+    GET DIAGNOSTICS n = ROW_COUNT;
+    r := r || format('%s  COLOCACION en MLA: aceptada (%s fila)', CASE WHEN n = 1 THEN 'OK   ' ELSE 'FALLA' END, n);
+    -- Habilitarla en otro mercado es un UPDATE del catálogo, sin migración.
+    UPDATE tipos_costo SET mercados = ARRAY['MLA', 'MCO'] WHERE tipo = 'COLOCACION';
+    UPDATE compras SET tipo_costo = 'COLOCACION' WHERE id = (SELECT min(id) FROM compras WHERE mercado_id = v_mco);
+    GET DIAGNOSTICS n = ROW_COUNT;
+    r := r || format('%s  habilitada en MCO desde el catálogo: aceptada (%s fila)', CASE WHEN n = 1 THEN 'OK   ' ELSE 'FALLA' END, n);
+
     -- ============================================================== 1. ZB de MLC
     PERFORM set_config('request.jwt.claims', json_build_object('sub', a_zb, 'role', 'authenticated')::text, true);
     SET LOCAL ROLE authenticated;
@@ -160,6 +187,8 @@ BEGIN
     SELECT count(DISTINCT mercado_id) INTO n FROM fn_inversion_total();
     SELECT count(DISTINCT mercado_id) INTO n2 FROM v_alertas;
     r := r || format('%s  inversión de %s mercados y alertas de %s', CASE WHEN n = e_mercados_con_compras AND n2 >= 1 THEN 'OK   ' ELSE 'FALLA' END, n, n2);
+    SELECT (SELECT count(*) FROM tipos_compra) + (SELECT count(*) FROM tipos_costo) INTO n;
+    r := r || format('%s  LECTURA lee los catálogos (%s filas)', CASE WHEN n = 7 THEN 'OK   ' ELSE 'FALLA' END, n);
     UPDATE compras SET formato = 'X' WHERE mercado_id = v_mlc;
     GET DIAGNOSTICS n = ROW_COUNT;
     r := r || format('%s  LECTURA no edita compras (%s filas)', CASE WHEN n = 0 THEN 'OK   ' ELSE 'FALLA' END, n);

@@ -295,6 +295,10 @@ def filas(ws, desde, col_clave):
 #     Alertas. Nada de (b) se unifica sin clic.
 # ---------------------------------------------------------------------------
 
+# Valores viejos que el Flow todavía puede traer y su equivalente del catálogo.
+# FACTURABLE era lo mismo que DIRECTO (MLM, 19-10-2026).
+ALIAS_CATALOGO = {"tipo_compra": {"FACTURABLE": "DIRECTO"}}
+
 SUFIJOS_SOCIETARIOS = {"SA", "SAS", "SRL", "LTDA", "LIMITADA", "SPA", "SL", "INC", "LLC",
                        "SAPI", "CV", "SACV", "SADECV", "SC", "EIRL", "SAC", "SAU"}
 
@@ -368,11 +372,16 @@ class Carga:
             sys.exit(f"El mercado {mercado_codigo} no existe en la tabla mercados.")
         self.mercado_id, self.moneda = fila
 
-        # Valores que admite cada enum, leídos de la base.
+        # Valores que admite cada columna, leídos de la base: tipo de compra y tipo
+        # de costo de sus catálogos (sql/catalogos.sql; el de costo, solo los
+        # permitidos en este mercado), medio de su enum.
         self.enums = {}
-        for col, tipo in (("tipo_compra", "tipo_compra_enum"), ("medio", "medio_enum"), ("tipo_costo", "tipo_costo_enum")):
-            self.cur.execute("SELECT enumlabel FROM pg_enum WHERE enumtypid = %s::regtype", (tipo,))
-            self.enums[col] = {r[0] for r in self.cur.fetchall()}
+        self.cur.execute("SELECT tipo FROM tipos_compra")
+        self.enums["tipo_compra"] = {r[0] for r in self.cur.fetchall()}
+        self.cur.execute("SELECT tipo FROM tipos_costo WHERE mercados IS NULL OR %s = ANY (mercados)", (mercado_codigo,))
+        self.enums["tipo_costo"] = {r[0] for r in self.cur.fetchall()}
+        self.cur.execute("SELECT enumlabel FROM pg_enum WHERE enumtypid = 'medio_enum'::regtype")
+        self.enums["medio"] = {r[0] for r in self.cur.fetchall()}
 
         self.cur.execute("SELECT upper(btrim(texto_flow)), taxonomia FROM campanas_alias WHERE mercado_id = %s",
                          (self.mercado_id,))
@@ -667,11 +676,15 @@ class Carga:
     # -- compras --------------------------------------------------------
 
     def enum_o_fuera(self, col, valor, fuera):
-        """Valor del enum, o None (y lo original en fuera_de_catalogo) si no está."""
+        """Valor del catálogo, o None (y lo original en fuera_de_catalogo) si no
+        está o no se permite en este mercado (COLOCACION fuera de MLA)."""
         t = texto(valor)
         if t is None:
             return None
         k = normalizar(t)
+        if k in ALIAS_CATALOGO.get(col, {}):
+            k = ALIAS_CATALOGO[col][k]
+            self.notas[f"{col.replace('_', ' ')} traducido ({normalizar(t)} → {k})"] += 1
         if k in self.enums[col]:
             return k
         fuera[col] = t
@@ -771,7 +784,7 @@ class Carga:
                 trafico, tiempo, tarifa_bruta, descuento_pct, tarifa_neta,
                 cantidad, nro_semanas, valor_total, valor_total_manual,
                 fecha_inicio, fecha_fin, fuera_de_catalogo)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s::tipo_compra_enum,%s::medio_enum,%s::tipo_costo_enum,
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::medio_enum,%s,
                     %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
             ON CONFLICT (mercado_id, codigo) DO UPDATE SET
                 cliente           = EXCLUDED.cliente,

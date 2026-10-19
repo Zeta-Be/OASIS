@@ -3,12 +3,34 @@
 
 const { createApp, nextTick } = Vue;
 
-// Espejo de los enums de la base (oasis_v2_esquema.sql). Si cambian allá, cambian aquí.
+// Espejo del enum medio de la base (oasis_v2_esquema.sql). Si cambia allá, cambia aquí.
+// Tipo de compra y tipo de costo no van aquí: son tablas de catálogo
+// (sql/catalogos.sql) y se leen con cargarCatalogos().
 const ENUMS = {
-  tipo_compra: ['DIRECTO', 'BONIFICADO', 'FACTURABLE', 'PAGO ANTICIPADO'],
-  medio:       ['OOH', 'DOOH'],
-  tipo_costo:  ['EXHIBICION', 'PRODUCCION', 'IMPUESTOS', 'COLOCACION'],
+  medio: ['OOH', 'DOOH'],
 };
+
+// Catálogos de tipo de compra y tipo de costo, en su orden. El de costo trae
+// los mercados donde se permite cada uno (null = todos): COLOCACION, solo MLA.
+async function cargarCatalogos() {
+  const [compra, costo] = await Promise.all([
+    sb.from('tipos_compra').select('tipo').order('orden'),
+    sb.from('tipos_costo').select('tipo, mercados').order('orden'),
+  ]);
+  if (compra.error) throw compra.error;
+  if (costo.error) throw costo.error;
+  return { tiposCompra: compra.data.map(t => t.tipo), tiposCosto: costo.data };
+}
+
+// Tipos de costo permitidos en un mercado (por código). Sin mercado: todos.
+// `actual` se agrega si no está, para que una fila con un valor ya guardado
+// no lo pierda al pintarse.
+function tiposCostoPara(catalogo, codigoMercado, actual) {
+  const lista = catalogo
+    .filter(t => !codigoMercado || !t.mercados || t.mercados.includes(codigoMercado))
+    .map(t => t.tipo);
+  return actual && !lista.includes(actual) ? [...lista, actual] : lista;
+}
 
 // El panel que se está cerrando sigue en el DOM durante su animación de salida.
 const PANEL_ACTIVO = '.panel-fondo:not(.panel-leave-active)';

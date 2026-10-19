@@ -112,7 +112,7 @@
                 <span v-if="soloLectura" class="txt">{{ r.tipo_compra }}</span>
                 <select v-else v-model="r.tipo_compra">
                   <option :value="null"></option>
-                  <option v-for="t in ENUMS.tipo_compra" :key="t" :value="t">{{ t }}</option>
+                  <option v-for="t in catalogos.tiposCompra" :key="t" :value="t">{{ t }}</option>
                 </select>
               </td>
               <td :class="claseErr(r, 'proveedor_id')" :title="msgErr(r, 'proveedor_id')">
@@ -133,7 +133,7 @@
                 <span v-if="soloLectura" class="txt">{{ r.tipo_costo }}</span>
                 <select v-else v-model="r.tipo_costo" @change="recalcular(r, 'total')">
                   <option :value="null"></option>
-                  <option v-for="t in ENUMS.tipo_costo" :key="t" :value="t">{{ t }}</option>
+                  <option v-for="t in tiposCostoDe(r)" :key="t" :value="t">{{ t }}</option>
                 </select>
               </td>
               <td :class="[claseErr(r, 'formato'), { nuevo: avisoFormato(r) }]"
@@ -254,7 +254,7 @@
               <label for="p-tipo-compra">Tipo de compra</label>
               <select id="p-tipo-compra" v-model="borrador.tipo_compra" @blur="tocar('tipo_compra')">
                 <option :value="null"></option>
-                <option v-for="t in ENUMS.tipo_compra" :key="t" :value="t">{{ t }}</option>
+                <option v-for="t in catalogos.tiposCompra" :key="t" :value="t">{{ t }}</option>
               </select>
               <div class="campo-error" v-if="errPanel('tipo_compra')">{{ errPanel('tipo_compra') }}</div>
             </div>
@@ -278,7 +278,7 @@
               <label for="p-tipo-costo">Tipo de costo</label>
               <select id="p-tipo-costo" v-model="borrador.tipo_costo" @change="recalcular(borrador, 'total')" @blur="tocar('tipo_costo')">
                 <option :value="null"></option>
-                <option v-for="t in ENUMS.tipo_costo" :key="t" :value="t">{{ t }}</option>
+                <option v-for="t in tiposCostoDe(borrador)" :key="t" :value="t">{{ t }}</option>
               </select>
               <div class="campo-error" v-if="errPanel('tipo_costo')">{{ errPanel('tipo_costo') }}</div>
             </div>

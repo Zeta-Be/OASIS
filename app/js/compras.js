@@ -247,6 +247,10 @@ function validar(r, ctx) {
   for (const c of ['cliente', 'formato', 'ubicacion', 'ciudad', 'tipo_compra', 'medio', 'tipo_costo']) {
     if (!r[c]) e[c] = obligatorio;
   }
+  // La base lo rechaza igual (fn_validar_tipo_costo); aquí se marca en la celda.
+  if (r.tipo_costo && ctx.tipoCostoPermitido && !ctx.tipoCostoPermitido(r)) {
+    e.tipo_costo = 'Este tipo de costo no se usa en este mercado';
+  }
 
   // Solo una compra nueva necesita campaña para guardarse. Una cargada del
   // Sheets sin campaña reconocida se corrige desde Alertas y no bloquea la fila.
@@ -323,6 +327,7 @@ async function iniciar() {
 
     data: () => ({
       ENUMS,
+      catalogos: { tiposCompra: [], tiposCosto: [] },
       usuario,
       cargando: true,
       errorCarga: '',
@@ -349,6 +354,7 @@ async function iniciar() {
         return {
           proveedoresPorId: this.proveedoresPorId,
           campanaOoh: (mercadoId) => this.campanaOoh(mercadoId),
+          tipoCostoPermitido: (r) => tiposCostoPara(this.catalogos.tiposCosto, this.codigoMercado(r.mercado_id)).includes(r.tipo_costo),
         };
       },
 
@@ -358,7 +364,10 @@ async function iniciar() {
       },
 
       opcionesMes() { return this.meses.map(m => ({ valor: m, etiqueta: this.nombreMes(m) })); },
-      opcionesTipoCosto() { return ENUMS.tipo_costo.map(t => ({ valor: t, etiqueta: t })); },
+      opcionesTipoCosto() {
+        return tiposCostoPara(this.catalogos.tiposCosto, this.codigoFiltroMercado).map(t => ({ valor: t, etiqueta: t }));
+      },
+      codigoFiltroMercado() { const m = this.mercadosPorId.get(this.filtros.mercado); return m ? m.codigo : ''; },
       opcionesProveedor() {
         const lista = this.filtros.mercado
           ? this.proveedores.filter(p => p.mercado_id === this.filtros.mercado)
@@ -480,6 +489,8 @@ async function iniciar() {
       nombreProveedor(id) { const p = this.proveedoresPorId.get(id); return p ? p.nombre : ''; },
       nombreMes(k) { const [y, m] = k.split('-'); return `${MESES[Number(m) - 1]} ${y}`; },
       codigoMercado(id) { const m = this.mercadosPorId.get(id); return m ? m.codigo : '?'; },
+      // Solo los tipos de costo del mercado de la compra (COLOCACION, solo MLA).
+      tiposCostoDe(r) { return tiposCostoPara(this.catalogos.tiposCosto, this.codigoMercado(r.mercado_id), r.tipo_costo); },
       campanaOoh(mercadoId) { const m = this.mercadosPorId.get(mercadoId); return m ? m.campana_ooh_id : null; },
       nombreCampana(r) {
         const c = this.campanasPorId.get(r.campana_id);
@@ -712,7 +723,7 @@ async function iniciar() {
 
       async cargar() {
         try {
-          const [mercados, mis, propios, campanas, proveedores, compras] = await Promise.all([
+          const [mercados, mis, propios, campanas, proveedores, compras, catalogos] = await Promise.all([
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre, activo, campana_ooh_id, moneda').order('id')),
             sb.rpc('fn_mis_mercados'),
             traerTodo(() => sb.from('usuario_mercados').select('mercado_id')
@@ -720,7 +731,9 @@ async function iniciar() {
             traerTodo(() => sb.from('campanas').select('id, mercado_id, nombre_unico').order('id')),
             traerTodo(() => sb.from('proveedores').select('id, mercado_id, nombre, activo').order('nombre')),
             traerTodo(() => sb.from('compras').select(COLUMNAS_COMPRA).order('mercado_id').order('codigo')),
+            cargarCatalogos(),
           ]);
+          this.catalogos = catalogos;
           if (mis.error) throw mis.error;
 
           this.mercados = mercados;
