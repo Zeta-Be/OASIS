@@ -34,8 +34,9 @@ El objetivo del sistema es saber cuánta plata corresponde a cada material, día
 | Sitio publicado | https://zeta-be.github.io/OASIS/ — GitHub Pages publica `app/` en cada push a `main` (`.github/workflows/pages.yml`). Vive en la subcarpeta `/OASIS/`: toda ruta dentro de `app/` debe ser relativa, nunca empezar con `/` |
 | Plantilla de correo de acceso | `supabase/plantilla_codigo.html` — se pega a mano en Supabase → Authentication → Emails (Magic Link y Confirm signup). Todavía no se puede: Supabase no deja editar plantillas sin SMTP propio |
 | Detector de duplicados | `sql/duplicados.sql` (tabla, RLS, `fn_unificar_duplicado`, `fn_rechazar_duplicado`), Edge Function `supabase/functions/detectar-duplicados/` (el prompt está en `prompt.md`), prueba local `supabase/probar_duplicados.ts`. Ver «Detector de duplicados» |
+| BigQuery para BI | `mbw-spl-brazil.ds_meli_oasis.inversion_diaria`: copia de `v_inversion_diaria` que llena `exportar_bq.py` después de cada carga. Ver «BigQuery» en Contrato con BI |
 | Código | GitHub `Zeta-Be/OASIS` (https://github.com/Zeta-Be/OASIS) |
-| Fuente de captura actual | Un Google Sheets por mercado, con los IDs en `mercados.json` (MCO `13Vh45CymNMntNG-EW3NQnglnfyvq39nT7nvediDTV1g`). Los equipos siguen llenando ahí hasta el corte. Cada Sheets se comparte como Lector con `oasis-lector@mbw-spl-brazil.iam.gserviceaccount.com` |
+| Fuente de captura actual | Un Google Sheets por mercado, con los IDs en `mercados.json` (MCO `1yiMiERvkTzePyw2FlsQGwPRMSdq9YO2Gxv4ICPbp-zY`, el archivo «_VF» desde el 04-11-2026). Los equipos siguen llenando ahí hasta el corte. Cada Sheets se comparte como Lector con `oasis-lector@mbw-spl-brazil.iam.gserviceaccount.com` |
 
 ## Modelo de datos
 
@@ -97,7 +98,7 @@ Primera vez que entran usuarios de fuera de ZetaBé. La regla: **un externo no v
 - **Auditoría:** tabla `auditoria` (tabla, fila_id, campo, valor_anterior, valor_nuevo, usuario_id, en). Un trigger en `compras` y `materiales` registra cada campo cambiado, de cualquier rol; alta y baja van como una fila con `campo` = `(alta)` o `(baja)` y la fila completa en JSON. No registra `actualizado_en` ni un número que solo cambia de escala (125000000 → 125000000.00). `usuario_id` nulo = cambio sin login de la app (la carga desde Sheets, una conexión directa). Solo ADMIN la lee; nadie escribe en ella por la API.
 - **Portal:** los externos entran a `portal.html` (el login y las pantallas internas los redirigen; la redirección es comodidad, la protección es RLS). Una card con sus materiales, filtros por mes y sub campaña, calendario sin costos y CSV con las mismas columnas de la vista (más el número de evidencias). Las evidencias van en un panel por material (ver «Evidencias»).
 - **Duplicados:** si se unifica un proveedor, sus compras pasan al proveedor canónico. Un usuario PROVEEDOR que apuntaba al proveedor absorbido deja de ver esas compras: hay que cambiar su `proveedor_id` al canónico.
-- **Pruebas:** después de tocar algo de esto, correr `sql/fase3_portal_pruebas.sql` en el SQL Editor. Crea usuarios de prueba (PROVEEDOR de EFECTIMEDIOS, AGENCIA de MCO, PLANNING, LECTURA, ADMIN), simula sus sesiones como la API y termina con un error a propósito que revierte todo; el informe sale en el mensaje del error, una línea OK o FALLA por prueba. Recorre todas las vistas de `public` salvo `v_materiales_externos`, así que una vista nueva queda cubierta sola. Tiene fijo que EFECTIMEDIOS ve 218 materiales (al 19-10-2026) (`ESPERADO_PROVEEDOR`): si el Sheets cambia los suyos, actualizarlo.
+- **Pruebas:** después de tocar algo de esto, correr `sql/fase3_portal_pruebas.sql` en el SQL Editor. Crea usuarios de prueba (PROVEEDOR de EFECTIMEDIOS, AGENCIA de MCO, PLANNING, LECTURA, ADMIN), simula sus sesiones como la API y termina con un error a propósito que revierte todo; el informe sale en el mensaje del error, una línea OK o FALLA por prueba. Recorre todas las vistas de `public` salvo `v_materiales_externos`, así que una vista nueva queda cubierta sola. Tiene fijo que EFECTIMEDIOS ve 261 materiales (al 04-11-2026) (`ESPERADO_PROVEEDOR`): si el Sheets cambia los suyos, actualizarlo.
 
 **Alta de un proveedor o una agencia:** en la pantalla Usuarios, como cualquier otro (ver «Alta de usuarios»). Al PROVEEDOR se le elige su proveedor (si no existe, primero su fila en `proveedores`, una por proveedor y mercado, con `grupo_id`; ojo con los duplicados: usar el nombre que ya tienen sus compras). No lleva `usuario_mercados`: su mercado sale del proveedor. La AGENCIA lleva sus mercados.
 
@@ -175,6 +176,8 @@ Columnas agregadas después, siempre al final para no mover las anteriores: `mes
 
 **Nunca sumar mercados.** Cada mercado está en su moneda (`moneda`): un total de BI o de la app es por mercado. En la app, Inversión siempre muestra un mercado (no hay «Todos») y Compras, con «Todos», muestra un total por moneda.
 
+**BigQuery.** BI lee `mbw-spl-brazil.ds_meli_oasis.inversion_diaria` (dataset en US), no la base. `exportar_bq.py` copia `v_inversion_diaria` de los cinco mercados con las 22 columnas en su orden, más `exportado_en` (cuándo se tomó la foto) al final. Reemplaza la tabla completa en cada corrida (WRITE_TRUNCATE): si falla, la tabla queda como estaba. Se detiene si la vista cambió de columnas u orden y al final compara filas y costo por mercado entre OASIS y BigQuery. `estado` y `costo_ejecutado` quedan con la fecha de corte del día en que se exportó: la tabla envejece si no se exporta. Usa las credenciales de `gcloud auth application-default login` de quien la corre (Nicolás); con `--credenciales` usa una cuenta de servicio, que necesitaría BigQuery Job User en el proyecto y Data Editor en el dataset (los asigna un admin de GCP). Primera exportación: 04-11-2026, 117.821 filas.
+
 **La columna estándar para reportar por mes es `month`** (mes de ejecución, el reparto por día de OASIS). `mes_compra` es auxiliar: sirve para conciliar con el Flow o con la facturación, que asignan todo al mes de inicio de la compra, y no reemplaza a `month` en ningún reporte.
 
 ## Verificación
@@ -195,9 +198,13 @@ python3 cargar_oasis.py --todos --dry-run          # simula los cinco mercados
 python3 cargar_oasis.py --mercado MLC --dry-run    # simula uno
 python3 cargar_oasis.py --mercado MLC              # carga uno
 python3 cargar_oasis.py --todos                    # carga todos
+python3 exportar_bq.py --dry-run                   # lee la inversión y valida, sin subir
+python3 exportar_bq.py                             # la publica en BigQuery para BI
 ```
 
-Los IDs de los Sheets están en `mercados.json`. Cada mercado va en su propia transacción: si uno falla, los demás siguen y el resumen lo dice. Antes de tocar la base, el script compara el mercado con la celda PAÍS del Flow (C3) y con la tabla `mercados`; si no coinciden, no carga ese mercado. Localiza los encabezados por nombre, no por posición; si falta uno, se detiene y dice cuál. Es repetible: hace upsert por llave natural. Detecta compras y materiales que ya no están en el Sheets pero no los borra: eso se decide a mano. `--ensayo-sql archivo.sql` aplica una migración dentro de la misma transacción revertida, para ver cómo quedaría la carga con ella antes de aplicarla.
+Después de cargar, exportar a BigQuery: BI no ve la carga hasta entonces.
+
+Los IDs de los Sheets están en `mercados.json`. Cada mercado va en su propia transacción: si uno falla, los demás siguen y el resumen lo dice. Antes de cargar, revisar la renumeración (ver «Riesgo del Sheets»): el 04-11-2026 MLC traía dos filas insertadas en el Flow que corrían las compras 863 a 921; no tenían materiales en la base y el Tracking ya venía con la numeración nueva, así que la carga solo corrigió la base. Antes de tocar la base, el script compara el mercado con la celda PAÍS del Flow (C3) y con la tabla `mercados`; si no coinciden, no carga ese mercado. Localiza los encabezados por nombre, no por posición; si falta uno, se detiene y dice cuál. Es repetible: hace upsert por llave natural. Detecta compras y materiales que ya no están en el Sheets pero no los borra: eso se decide a mano. `--ensayo-sql archivo.sql` aplica una migración dentro de la misma transacción revertida, para ver cómo quedaría la carga con ella antes de aplicarla.
 
 **Todo se carga.** Lo incompleto o inconsistente entra y queda en Alertas de su mercado. Solo no entran: las filas del Flow que solo tienen el ID (plantilla vacía) y los materiales cuya compra no está en el Flow. El reporte dice, por mercado, cuántas compras y materiales leyó y cuántos entraron, qué normalizó en silencio y cada tipo de alerta con su conteo y los primeros 10 casos, leídos de `v_alertas` tal como los verá la pantalla.
 
@@ -250,7 +257,7 @@ Se usa código y no enlace porque los escáneres del correo corporativo abren lo
 **Siguiente:**
 1. **Despliegue y piloto con usuarios internos.** Publicar `app/` como sitio estático, dar de alta a los usuarios del piloto (pantalla Usuarios) y ajustar con lo que reporten. Los equipos siguen llenando el Sheets hasta que el piloto confirme el corte.
 2. **Fase 3: portal externo.** En la rama `feature/portal`: acceso externo, auditoría y `portal.html`. Falta piloto con un proveedor y una agencia.
-3. **Fase 4: BI.** Conexión directa de BI a las vistas, sin usuario en la app.
+3. **Fase 4: BI.** Hecho a mano: `exportar_bq.py` publica la inversión diaria en BigQuery después de cada carga. Falta automatizarlo (Cloud Run + Cloud Scheduler, diario; necesita BigQuery Job User para la cuenta de servicio). Ojo: en el plan gratis Supabase pausa el proyecto tras 7 días sin actividad (pasó el 27-10 y el 04-11) y se cae todo, sitio, carga y exportación; se reactiva en supabase.com → Restore project. Para producción, plan Pro o un proceso diario que la mantenga activa.
 
 **Datos por limpiar en el Sheets** (trabajo del equipo, no del sistema), según la carga del 5 de octubre de 2026: 1 material sin fechas (053-A), 109 materiales fuera del periodo de su compra (se resuelven con «Partir →» en Materiales), 12 compras sin materiales, proveedores duplicados (`JCDECAUX`/`JCDX`, `PUBLICIDAD BARRANQUILLA`/`PUBLICIDAD BQUILLA`).
 

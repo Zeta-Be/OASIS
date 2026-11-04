@@ -11,14 +11,14 @@
 --
 -- Requiere sql/fase3_portal.sql y sql/fase3_evidencias.sql aplicados.
 --
--- El proveedor de prueba es EFECTIMEDIOS (MCO). El 19-10-2026 tenía 218
+-- El proveedor de prueba es EFECTIMEDIOS (MCO). El 04-11-2026 tenía 261
 -- materiales; si el Sheets agrega o quita materiales suyos, actualizar
 -- ESPERADO_PROVEEDOR.
 -- =============================================================================
 
 DO $pruebas$
 DECLARE
-    ESPERADO_PROVEEDOR constant integer := 218;
+    ESPERADO_PROVEEDOR constant integer := 261;
     COLUMNAS_VISTA constant text := 'id,codigo,sub_campana,referencia,fecha_inicio,fecha_fin,enlace,reporte_implementacion,'
                                  || 'evidencia_url,compra,proveedor,formato,ubicacion,ciudad,tipo_costo';
     TABLAS_CERO constant text[] := ARRAY['compras', 'mercados', 'proveedores', 'proveedor_grupos', 'configuracion',
@@ -522,7 +522,8 @@ BEGIN
     -- Escala numérica: reescribir un monto igual con otra escala no es un cambio.
     UPDATE public.compras SET valor_total = round(valor_total, 2) + 0.00 WHERE mercado_id = v_mco;
     GET DIAGNOSTICS n2 = ROW_COUNT;
-    SELECT count(*) INTO n FROM public.auditoria WHERE tabla = 'compras' AND campo = 'valor_total';
+    -- Solo las de esta transacción (en = now()): la carga deja filas reales de valor_total.
+    SELECT count(*) INTO n FROM public.auditoria WHERE tabla = 'compras' AND campo = 'valor_total' AND en = now();
     r := r || format('%s  auditoria ignora el cambio de escala de valor_total en %s compras (%s filas)', CASE WHEN n = 0 AND n2 > 0 THEN 'OK   ' ELSE 'FALLA' END, n2, n);
 
     PERFORM set_config('request.jwt.claims', json_build_object('sub', a_lec, 'role', 'authenticated')::text, true);
