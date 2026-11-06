@@ -1,0 +1,8 @@
+# Lo único que sube a Cloud Build para armar la imagen del job diario.
+# Todo lo demás (.env, credenciales_google.json, Excel, app/, sql/…) se queda aquí.
+*
+!Dockerfile
+!cargar_oasis.py
+!exportar_bq.py
+!mercados.json
+!diario.sh

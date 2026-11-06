@@ -28,6 +28,9 @@ Opciones:
     archivo.xlsx      un Excel descargado, con --mercado
     --credenciales    llave de la cuenta de servicio (default: credenciales_google.json)
     --dry-run         hace todo dentro de una transacción y la revierte
+    --forzar-renumeracion  carga aunque el freno vea una posible renumeración
+                      (compras con materiales cuya ubicación, fechas y valor
+                      están ahora bajo otro ID); solo después de revisarla
     --ensayo-sql F    aplica el SQL de F dentro de esa misma transacción antes
                       de cargar (implica --dry-run). Sirve para ver cómo quedaría
                       la carga con una migración que todavía no se aplicó.
@@ -284,6 +287,44 @@ def filas(ws, desde, col_clave):
 
 
 # ---------------------------------------------------------------------------
+# Freno de renumeración.
+#
+# El ID de la compra en el Flow es un número escrito y el ID FLOW del Tracking
+# también. Si alguien reescribe los IDs del Flow (inserta filas y vuelve a
+# arrastrar la serie), una compra pasa a llamarse con el número de otra y sus
+# materiales quedan colgados de la compra equivocada, sin ningún error.
+#
+# El rastro: la huella (ubicación, fechas, valor) de una compra que ya tiene
+# materiales en la base aparece ahora bajo OTRO número en el Flow. Una
+# corrección normal (arreglar una ubicación, mover una fecha) no deja ese
+# rastro, y ordenar filas tampoco: el ID viaja con su fila.
+# ---------------------------------------------------------------------------
+
+RENUMERACION_MINIMO = 3   # desde aquí no se carga el mercado; menos, solo se avisa
+
+
+def huella_compra(ubicacion, fecha_inicio, fecha_fin, valor_total):
+    return (normalizar(ubicacion), fecha_inicio, fecha_fin, round(float(valor_total or 0)))
+
+
+def detectar_renumeracion(base, hoja):
+    """base: {codigo: huella} de las compras con materiales en la base.
+    hoja: {codigo: huella} de las compras del Flow.
+    Devuelve [(codigo, [códigos del Flow donde está ahora su huella])]."""
+    por_huella = defaultdict(list)
+    for codigo, h in hoja.items():
+        por_huella[h].append(codigo)
+    movidas = []
+    for codigo, h in sorted(base.items()):
+        if hoja.get(codigo) == h:
+            continue
+        otros = [c for c in por_huella.get(h, []) if c != codigo]
+        if otros:
+            movidas.append((codigo, otros))
+    return movidas
+
+
+# ---------------------------------------------------------------------------
 # Proveedores: el detector de duplicados de la carga, con reglas fijas.
 #
 # (a) Diferencias solo de mayúsculas, tildes, espacios, puntuación o sufijo
@@ -450,6 +491,22 @@ class Carga:
                 continue
             utiles.append(r)
         return utiles
+
+    def renumeracion(self, filas_flow):
+        """Compras con materiales cuya huella está ahora bajo otro ID (ver
+        detectar_renumeracion). Solo lee: corre antes de escribir nada."""
+        ws = self.wb["Flow"]
+        g = lambda r, k: ws.cell(row=r, column=self.FLOW[k]).value
+        hoja = {texto(g(r, "codigo")): huella_compra(espacios(g(r, "ubicacion")), fecha(g(r, "fecha_inicio")),
+                                                     fecha(g(r, "fecha_fin")), numero(g(r, "valor_total")))
+                for r in filas_flow}
+        self.cur.execute("""
+            SELECT c.codigo, c.ubicacion, c.fecha_inicio, c.fecha_fin, c.valor_total
+            FROM compras c
+            WHERE c.mercado_id = %s AND EXISTS (SELECT 1 FROM materiales m WHERE m.compra_id = c.id)
+        """, (self.mercado_id,))
+        base = {r[0]: huella_compra(*r[1:]) for r in self.cur.fetchall()}
+        return detectar_renumeracion(base, hoja)
 
     # -- campañas ----------------------------------------------------------
 
@@ -965,7 +1022,7 @@ class Carga:
 
 # ---------------------------------------------------------------------------
 
-def cargar_mercado(mercado, wb, dry_run, ensayo_sql):
+def cargar_mercado(mercado, wb, dry_run, ensayo_sql, forzar_renumeracion=False):
     """Carga un mercado en su propia transacción. Devuelve True si terminó bien."""
     # Todo lo del Sheets se lee antes de abrir la transacción: así los bloqueos
     # en la base duran segundos, no lo que tarde Google.
@@ -990,8 +1047,22 @@ def cargar_mercado(mercado, wb, dry_run, ensayo_sql):
         if precalculada:
             cur.execute("SELECT set_config('oasis.sin_recalculo', 'on', true)")
         carga = Carga(conn, wb, mercado, dry_run)
-        carga.campanas()
         utiles = carga.filas_flow()
+        movidas = carga.renumeracion(utiles)
+        casos = [f"{c} → ahora en {', '.join(otros)}" for c, otros in movidas]
+        if len(movidas) >= RENUMERACION_MINIMO and not forzar_renumeracion:
+            print(f"  [{mercado}] POSIBLE RENUMERACIÓN: {len(movidas)} compras con materiales aparecen en el Flow "
+                  "bajo otro ID (misma ubicación, fechas y valor). No se cargó nada de este mercado.")
+            for x in casos[:15]:
+                print(f"      {x}")
+            if len(casos) > 15:
+                print(f"      … y {len(casos) - 15} más")
+            print("      Revisa los IDs del Flow y del Tracking. Si el cambio es correcto, carga este mercado "
+                  "con --forzar-renumeracion.")
+            return False
+        if movidas:
+            carga.avisos["posible renumeración (se cargó; revisar el Flow)"].extend(casos)
+        carga.campanas()
         carga.proveedores(utiles)
         carga.compras(utiles)
         carga.cerrar_proveedores()
@@ -1025,6 +1096,8 @@ def main():
     ap.add_argument("--credenciales", default=os.path.join(RAIZ, "credenciales_google.json"))
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--ensayo-sql", help="SQL a aplicar dentro de la transacción (implica --dry-run)")
+    ap.add_argument("--forzar-renumeracion", action="store_true",
+                    help="carga aunque el freno vea una posible renumeración (después de revisarla)")
     args = ap.parse_args()
 
     if bool(args.mercado) == bool(args.todos):
@@ -1039,18 +1112,20 @@ def main():
 
     fallas = []
     for mk in mercados:
-        if args.archivo:
-            wb = openpyxl.load_workbook(args.archivo, data_only=True)
-        else:
-            sid = args.sheet or hojas.get(mk)
-            if not sid:
-                sys.exit(f"{mk} no está en mercados.json; agrégalo o usa --sheet ID.")
-            print(f"  [{mk}] Leyendo Google Sheets {sid} en vivo…")
-            wb = _LibroSheets(sid, args.credenciales)
+        # Con --todos, un Sheets que no abre o un encabezado que falta (sys.exit)
+        # detiene solo ese mercado, no los demás.
         try:
-            if not cargar_mercado(mk, wb, dry_run, args.ensayo_sql):
+            if args.archivo:
+                wb = openpyxl.load_workbook(args.archivo, data_only=True)
+            else:
+                sid = args.sheet or hojas.get(mk)
+                if not sid:
+                    sys.exit(f"{mk} no está en mercados.json; agrégalo o usa --sheet ID.")
+                print(f"  [{mk}] Leyendo Google Sheets {sid} en vivo…")
+                wb = _LibroSheets(sid, args.credenciales)
+            if not cargar_mercado(mk, wb, dry_run, args.ensayo_sql, args.forzar_renumeracion):
                 fallas.append(mk)
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             print(f"  [{mk}] FALLÓ, no se cargó nada de este mercado: {e}")
             fallas.append(mk)
             if not args.todos:

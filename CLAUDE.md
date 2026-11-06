@@ -35,6 +35,7 @@ El objetivo del sistema es saber cuánta plata corresponde a cada material, día
 | Plantilla de correo de acceso | `supabase/plantilla_codigo.html` — se pega a mano en Supabase → Authentication → Emails (Magic Link y Confirm signup). Todavía no se puede: Supabase no deja editar plantillas sin SMTP propio |
 | Detector de duplicados | `sql/duplicados.sql` (tabla, RLS, `fn_unificar_duplicado`, `fn_rechazar_duplicado`), Edge Function `supabase/functions/detectar-duplicados/` (el prompt está en `prompt.md`), prueba local `supabase/probar_duplicados.ts`. Ver «Detector de duplicados» |
 | BigQuery para BI | `mbw-spl-brazil.ds_meli_oasis.inversion_diaria`: copia de `v_inversion_diaria` que llena `exportar_bq.py` después de cada carga. Ver «BigQuery» en Contrato con BI |
+| Corrida diaria | Job de Cloud Run `oasis-diario` (us-central1, `mbw-spl-brazil`), todos los días a las 6:00 hora Colombia por Cloud Scheduler: `diario.sh` carga los cinco mercados y exporta a BigQuery. Se despliega con `desplegar_diario.sh` (`Dockerfile`, `.gcloudignore`). Ver «Corrida diaria» |
 | Código | GitHub `Zeta-Be/OASIS` (https://github.com/Zeta-Be/OASIS) |
 | Fuente de captura actual | Un Google Sheets por mercado, con los IDs en `mercados.json` (MCO `1yiMiERvkTzePyw2FlsQGwPRMSdq9YO2Gxv4ICPbp-zY`, el archivo «_VF» desde el 04-11-2026). Los equipos siguen llenando ahí hasta el corte. Cada Sheets se comparte como Lector con `oasis-lector@mbw-spl-brazil.iam.gserviceaccount.com` |
 
@@ -176,7 +177,7 @@ Columnas agregadas después, siempre al final para no mover las anteriores: `mes
 
 **Nunca sumar mercados.** Cada mercado está en su moneda (`moneda`): un total de BI o de la app es por mercado. En la app, Inversión siempre muestra un mercado (no hay «Todos») y Compras, con «Todos», muestra un total por moneda.
 
-**BigQuery.** BI lee `mbw-spl-brazil.ds_meli_oasis.inversion_diaria` (dataset en US), no la base. `exportar_bq.py` copia `v_inversion_diaria` de los cinco mercados con las 22 columnas en su orden, más `exportado_en` (cuándo se tomó la foto) al final. Reemplaza la tabla completa en cada corrida (WRITE_TRUNCATE): si falla, la tabla queda como estaba. Se detiene si la vista cambió de columnas u orden y al final compara filas y costo por mercado entre OASIS y BigQuery. `estado` y `costo_ejecutado` quedan con la fecha de corte del día en que se exportó: la tabla envejece si no se exporta. Usa las credenciales de `gcloud auth application-default login` de quien la corre (Nicolás); con `--credenciales` usa una cuenta de servicio, que necesitaría BigQuery Job User en el proyecto y Data Editor en el dataset (los asigna un admin de GCP). Primera exportación: 04-11-2026, 117.821 filas.
+**BigQuery.** BI lee `mbw-spl-brazil.ds_meli_oasis.inversion_diaria` (dataset en US), no la base. `exportar_bq.py` copia `v_inversion_diaria` de los cinco mercados con las 22 columnas en su orden, más `exportado_en` (cuándo se tomó la foto) al final. Reemplaza la tabla completa en cada corrida (WRITE_TRUNCATE): si falla, la tabla queda como estaba. Se detiene si la vista cambió de columnas u orden y al final compara filas y costo por mercado entre OASIS y BigQuery. `estado` y `costo_ejecutado` quedan con la fecha de corte del día en que se exportó: la tabla envejece si no se exporta. A mano usa las credenciales de `gcloud auth application-default login` de quien la corre; en la corrida diaria, las de la cuenta del job. Nicolás es OWNER del dataset: puede darle lectura al equipo de BI sin un admin. Primera exportación: 04-11-2026, 117.821 filas.
 
 **La columna estándar para reportar por mes es `month`** (mes de ejecución, el reparto por día de OASIS). `mes_compra` es auxiliar: sirve para conciliar con el Flow o con la facturación, que asignan todo al mes de inicio de la compra, y no reemplaza a `month` en ningún reporte.
 
@@ -184,7 +185,6 @@ Columnas agregadas después, siempre al final para no mover las anteriores: `mes
 
 ```sql
 SELECT * FROM v_cuadre;    -- debe salir vacío: compras donde la suma no da el valor total
-                           -- (hoy, salvo la 371 de MLA: material de 365 días en una compra de enero)
 SELECT * FROM v_alertas;   -- pendientes de captura
 ```
 
@@ -202,7 +202,18 @@ python3 exportar_bq.py --dry-run                   # lee la inversión y valida,
 python3 exportar_bq.py                             # la publica en BigQuery para BI
 ```
 
-Después de cargar, exportar a BigQuery: BI no ve la carga hasta entonces.
+Después de cargar, exportar a BigQuery: BI no ve la carga hasta entonces. La corrida diaria hace las dos cosas sola (ver «Corrida diaria»).
+
+**Freno de renumeración.** Antes de escribir nada, la carga busca compras que ya tienen materiales en la base y cuya huella (ubicación, fechas y valor) aparece ahora en el Flow bajo **otro** ID: es el rastro de alguien que reescribió la columna ID (inserta filas y vuelve a arrastrar la serie), lo que dejaría los materiales colgados de otra compra. Con 3 o más (`RENUMERACION_MINIMO`), ese mercado no se carga y el reporte lista los casos («863 → ahora en 865»); con 1 o 2 carga y los deja en «posible renumeración» del reporte (puede ser una fila copiada para crear una compra nueva). Corregir una ubicación o una fecha no lo dispara, ni ordenar filas (el ID viaja con su fila). Después de revisar el Flow y el Tracking: `--forzar-renumeracion`. Probado el 05-11-2026 con la renumeración real de MLC (57 casos), la corrección de MLA 760-761 y los cinco Sheets reales (0).
+
+## Corrida diaria
+
+Job de Cloud Run `oasis-diario` (proyecto `mbw-spl-brazil`, us-central1), disparado por Cloud Scheduler todos los días a las 6:00 (America/Bogota). Corre `diario.sh`: `cargar_oasis.py --todos` y después `exportar_bq.py`, aunque algún mercado haya fallado (el que falla o frena se queda con los datos del día anterior, también en BigQuery). Si cualquiera de los dos pasos falla, la ejecución queda marcada como fallida en Cloud Run. Además mantiene activa la base, que en el plan gratis se pausa a los 7 días sin uso.
+- **Identidad:** la cuenta por defecto del proyecto (`655979796114-compute@developer.gserviceaccount.com`, rol Editor), porque Nicolás no puede asignar roles. Lo limpio es que un admin le dé a `oasis-lector` BigQuery Job User en el proyecto y Data Editor en el dataset, y cambiar `CUENTA` en `desplegar_diario.sh`.
+- **Secretos** (Secret Manager): `oasis-pgpassword` (PGPASSWORD de `.env`) y `oasis-credenciales-google` (la llave de `oasis-lector`, para los Sheets, montada en `/secretos/google/credenciales.json`). El resto de la conexión va como variables del job. La imagen solo lleva los scripts y `mercados.json` (`.gcloudignore`).
+- **Desplegar o actualizar** (después de cambiar `cargar_oasis.py`, `exportar_bq.py`, `mercados.json` o la contraseña): en una terminal, `source .env && sh desplegar_diario.sh` (gcloud con sesión: `gcloud auth login`). Lo corre Nicolás: subir secretos lo bloquea el control de permisos de Claude Code.
+- **Correrlo ya:** `gcloud run jobs execute oasis-diario --region=us-central1 --wait`. **Ver qué pasó:** consola de Cloud Run → Jobs → oasis-diario → ejecuciones y registros (el mismo reporte de la carga, mercado por mercado). Si no corre, nadie avisa todavía: los avisos por correo son un paso pendiente.
+- Primera corrida: 05-11-2026, cinco mercados cargados, 116.113 filas exportadas, todo OK.
 
 Los IDs de los Sheets están en `mercados.json`. Cada mercado va en su propia transacción: si uno falla, los demás siguen y el resumen lo dice. Antes de cargar, revisar la renumeración (ver «Riesgo del Sheets»): el 04-11-2026 MLC traía dos filas insertadas en el Flow que corrían las compras 863 a 921; no tenían materiales en la base y el Tracking ya venía con la numeración nueva, así que la carga solo corrigió la base. Antes de tocar la base, el script compara el mercado con la celda PAÍS del Flow (C3) y con la tabla `mercados`; si no coinciden, no carga ese mercado. Localiza los encabezados por nombre, no por posición; si falta uno, se detiene y dice cuál. Es repetible: hace upsert por llave natural. Detecta compras y materiales que ya no están en el Sheets pero no los borra: eso se decide a mano. `--ensayo-sql archivo.sql` aplica una migración dentro de la misma transacción revertida, para ver cómo quedaría la carga con ella antes de aplicarla.
 
@@ -257,11 +268,11 @@ Se usa código y no enlace porque los escáneres del correo corporativo abren lo
 **Siguiente:**
 1. **Despliegue y piloto con usuarios internos.** Publicar `app/` como sitio estático, dar de alta a los usuarios del piloto (pantalla Usuarios) y ajustar con lo que reporten. Los equipos siguen llenando el Sheets hasta que el piloto confirme el corte.
 2. **Fase 3: portal externo.** En la rama `feature/portal`: acceso externo, auditoría y `portal.html`. Falta piloto con un proveedor y una agencia.
-3. **Fase 4: BI.** Hecho a mano: `exportar_bq.py` publica la inversión diaria en BigQuery después de cada carga. Falta automatizarlo (Cloud Run + Cloud Scheduler, diario; necesita BigQuery Job User para la cuenta de servicio). Ojo: en el plan gratis Supabase pausa el proyecto tras 7 días sin actividad (pasó el 27-10 y el 04-11) y se cae todo, sitio, carga y exportación; se reactiva en supabase.com → Restore project. Para producción, plan Pro o un proceso diario que la mantenga activa.
+3. **Fase 4: BI.** La inversión diaria está en BigQuery y se actualiza sola cada mañana (ver «Corrida diaria»). Falta: dar lectura del dataset al equipo de BI, avisos por correo si la corrida falla y, opcional, pasar el job a `oasis-lector` con sus propios roles. BI solo necesita la tabla de inversión diaria. Ojo: en el plan gratis Supabase pausa el proyecto tras 7 días sin actividad (pasó el 27-10 y el 04-11; se reactiva en supabase.com → Restore project); la corrida diaria debería evitarlo.
 
 **Datos por limpiar en el Sheets** (trabajo del equipo, no del sistema), según la carga del 5 de octubre de 2026: 1 material sin fechas (053-A), 109 materiales fuera del periodo de su compra (se resuelven con «Partir →» en Materiales), 12 compras sin materiales, proveedores duplicados (`JCDECAUX`/`JCDX`, `PUBLICIDAD BARRANQUILLA`/`PUBLICIDAD BQUILLA`).
 
-**Riesgo del Sheets:** en Flow el ID es `=TEXT(ROW()-10,"000")` y en Tracking el "ID FLOW" se escribe a mano. Ordenar o insertar filas en Flow renumera las compras y deja materiales colgados de otra compra sin ningún aviso. Antes de cargar, comparar con `--dry-run` cuántas compras cambian de ubicación.
+**Riesgo del Sheets:** desde noviembre de 2026, en los cinco Sheets el ID del Flow es un número escrito (ya no la fórmula `=TEXT(ROW()-10,"000")`) y el «ID FLOW» del Tracking también. Ordenar filas ya no renumera: el ID viaja con su fila (MLC tiene las filas 11-316 en otro orden y MLU la 384 y la 385 cambiadas, sin daño). El riesgo que queda es reescribir la columna ID (insertar filas y volver a arrastrar la serie, como MLC con la 863-921 el 04-11-2026): eso lo detiene el freno de renumeración (ver «Cómo cargar datos»).
 
 **Tarea del día del corte** (cuando el Sheets se jubile y los 109 fuera de periodo estén limpios): agregar un trigger en `materiales` que haga cumplir en la base que el material esté dentro del periodo de su compra, al insertar o actualizar el material y al cambiar las fechas de la compra. Hoy esa regla solo vive en la interfaz y en `fn_guardar_tramos`; no se pone antes porque haría fallar `cargar_oasis.py`.
 
