@@ -30,6 +30,7 @@ DECLARE
     x        numeric;
     y        numeric;
     t        text;
+    g        text;
     e_mercados_con_compras integer;
     e_compras_mlc integer;
     fila     record;
@@ -151,6 +152,16 @@ BEGIN
     SELECT campana_id INTO n FROM compras WHERE id = v_compra;
     SELECT count(*) INTO n2 FROM v_alertas WHERE compra_id = v_compra AND alerta = 'campaña fuera del glosario';
     r := r || format('%s  taxonomía nueva que el glosario no tiene: sin campaña del glosario y con su alerta (%s)', CASE WHEN n IS NULL AND n2 = 1 THEN 'OK   ' ELSE 'FALLA' END, n2);
+    -- Mercado Pago (sql/mercado_pago.sql): la misma regla acepta la BU MP.
+    t := fn_taxonomia_de_texto('MLC', 'MLC_MP_UF-AW_USUARIOS_CTAPRO_X  8');
+    r := r || format('%s  taxonomía MP con texto al final: queda %s', CASE WHEN t = 'MLC_MP_UF-AW_USUARIOS_CTAPRO_X' THEN 'OK   ' ELSE 'FALLA' END, t);
+    r := r || format('%s  una BU que no es ML ni MP no es taxonomía',
+                     CASE WHEN fn_taxonomia_de_texto('MLC', 'MLC_XX_OTH-PF_ALL_ALTO-IMPACTO_X') IS NULL THEN 'OK   ' ELSE 'FALLA' END);
+    UPDATE compras SET campana_taxonomia = 'MLC_MP_OTH-PF_USUARIOS_PARQUE-FIJO_X' WHERE id = v_compra;
+    SELECT campana_taxonomia INTO t FROM compras WHERE id = v_compra;
+    SELECT campana_grupo INTO g FROM v_materiales WHERE compra_id = v_compra LIMIT 1;
+    r := r || format('%s  compra con parque fijo MP: la acepta (%s) y cuenta como %s',
+                     CASE WHEN t = 'MLC_MP_OTH-PF_USUARIOS_PARQUE-FIJO_X' AND g = 'PARQUE FIJO' THEN 'OK   ' ELSE 'FALLA' END, t, g);
     UPDATE compras SET campana_taxonomia = NULL, campana_id = NULL WHERE id = v_compra;   -- como estaba, para lo que sigue
 
     -- ============================================================== 1. ZB de MLC

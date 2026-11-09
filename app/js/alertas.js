@@ -199,8 +199,8 @@ async function iniciar() {
         f.error = '';
         f.ok = '';
         const tax = f.valor.trim().toUpperCase();
-        if (!new RegExp(`^${this.codigoFiltro}_ML_[A-Z0-9-]+(_[A-Z0-9-]+){3,}$`).test(tax)) {
-          f.error = `Formato: ${this.codigoFiltro}_ML_TIPO_ALL_NOMBRE_X, en mayúsculas y sin espacios`;
+        if (!new RegExp(`^${this.codigoFiltro}_(ML|MP)_[A-Z0-9-]+(_[A-Z0-9-]+){3,}$`).test(tax)) {
+          f.error = `Formato: ${this.codigoFiltro}_ML_TIPO_ALL_NOMBRE_X (o _MP_ para Mercado Pago), en mayúsculas y sin espacios`;
           return;
         }
         f.ocupado = true;

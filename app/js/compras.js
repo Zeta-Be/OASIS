@@ -163,7 +163,8 @@ const Combo = {
 // Para buscar: sin tildes y en mayúsculas (Compras no carga tramos.js).
 const plano = (s) => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
 
-const reTaxonomia = (mercado) => new RegExp(`^${mercado}_ML_[A-Z0-9-]+(_[A-Z0-9-]+){3,}$`);
+// Igual que fn_taxonomia_de_texto en la base: BU ML (Mercado Libre) o MP (Mercado Pago).
+const reTaxonomia = (mercado) => new RegExp(`^${mercado}_(ML|MP)_[A-Z0-9-]+(_[A-Z0-9-]+){3,}$`);
 
 // Nombre corto de una taxonomía: lo que va entre la cuarta pieza y el sufijo
 // (MLA_ML_OTH-PF_ALL_INTERIOR_X → INTERIOR; …_SUMMER-26_OOH → SUMMER-26).
