@@ -424,7 +424,15 @@ class Carga:
         self.cur.execute("SELECT enumlabel FROM pg_enum WHERE enumtypid = 'medio_enum'::regtype")
         self.enums["medio"] = {r[0] for r in self.cur.fetchall()}
 
-        self.cur.execute("SELECT upper(btrim(texto_flow)), taxonomia FROM campanas_alias WHERE mercado_id = %s",
+        # Alias de campañas. Con sql/mercado_pago_alias.sql cada alias tiene BU
+        # (ML o MP) y esta carga lee Flows de Mercado Libre: solo los ML. Si la
+        # columna todavía no existe, se leen todos, como antes.
+        self.cur.execute("""
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'campanas_alias' AND column_name = 'bu'
+        """)
+        filtro_bu = " AND bu = 'ML'" if self.cur.fetchone()[0] else ""
+        self.cur.execute("SELECT upper(btrim(texto_flow)), taxonomia FROM campanas_alias WHERE mercado_id = %s" + filtro_bu,
                          (self.mercado_id,))
         self.alias = dict(self.cur.fetchall())
         self.unificaciones()
