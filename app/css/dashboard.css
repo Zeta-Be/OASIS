@@ -180,3 +180,5 @@ table.dt tr.tot td{border-top:2px solid var(--ink)}
   .hbar-row{grid-template-columns:96px minmax(0,1fr) 64px;gap:6px}
   .mkpi{min-width:120px}
 }
+/* Logo OASIS del topbar (el del dashboard original) */
+.topbar img{height:32px}
