@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>OASIS · OOH LATAM</title>
+  <script>
+    // Tema elegido antes de pintar, para que no parpadee. Es solo una preferencia.
+    try { var tm = localStorage.getItem('oasis.dashboard.tema');
+          if (tm === 'light' || tm === 'dark') document.documentElement.setAttribute('data-theme', tm); } catch (e) {}
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sofia+Sans+Extra+Condensed:wght@700;800&family=Mulish:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="css/dashboard.css">
+</head>
+<body>
+  <header class="topbar">
+    <div id="bbw" class="hidden"><button class="back" type="button" id="btnVolver"></button></div>
+    <span class="brand">OOH <em>LATAM</em></span>
+    <span class="sep">|</span>
+    <span class="crumb" id="crumb"></span>
+    <div class="acciones">
+      <select class="anio-sel" id="anioSel" aria-label="Año"></select>
+      <div class="lang-sw">
+        <button class="lang-btn on" id="lES" type="button">ES</button><button class="lang-btn" id="lPT" type="button">PT</button>
+      </div>
+      <button class="tema-btn" id="temaBtn" type="button"></button>
+      <button class="dl-btn hidden" id="dlBtn" type="button">&#11015; Excel</button>
+      <a class="oasis hidden" id="oasisLink" href="inversion.html">&larr; OASIS</a>
+      <button class="salir-btn" id="salirBtn" type="button"></button>
+    </div>
+  </header>
+
+  <div id="estado" class="estado"></div>
+
+  <div id="home" class="hidden">
+    <div class="hero"><div class="hero-in">
+      <h1><em>OOH</em><br>LATAM <span id="heroAnio"></span></h1>
+      <p class="hero-sub" id="heroSub"></p>
+      <div class="hkpis" id="hkpis"></div>
+      <div id="avisoHome"></div>
+    </div></div>
+    <div class="countries"><h2 id="selTitle"></h2><div class="cgrid" id="cgrid"></div></div>
+  </div>
+
+  <div id="detail" class="hidden"><div class="dlayout">
+    <aside class="side" id="side">
+      <button class="ftoggle" type="button" id="fToggle" aria-expanded="false"></button>
+      <h3 id="filtTitle"></h3>
+      <div id="fg"></div>
+      <button class="clrall" type="button" id="clrAllBtn"></button>
+    </aside>
+    <div class="main">
+      <div id="avisoDet"></div>
+      <div class="meta" id="meta"></div>
+      <div class="mkpis" id="kpis"></div>
+      <div class="nota hidden" id="nota"></div>
+      <div class="tabs" id="tabs"></div>
+      <div id="out"></div>
+    </div>
+  </div></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="config.js"></script>
+  <script src="js/comun.js"></script>
+  <script src="js/dashboard.js"></script>
+</body>
+</html>

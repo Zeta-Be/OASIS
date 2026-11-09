@@ -34,3 +34,31 @@
   padding: 12px 14px;
 }
 .clave-caja .clave { flex: 1; font-size: 22px; letter-spacing: 0.08em; user-select: all; }
+
+/* Tasas de cambio */
+.tasas { margin-top: 18px; }
+.tasa-nueva { align-items: end; }
+.tasa-nueva .boton-tasa { justify-content: flex-end; }
+.tasa-error { margin: 0 16px 12px; }
+.tabla-tasas .num { text-align: right; }
+.tabla-tasas .tenue { color: var(--mut, #7A7263); font-size: 11px; margin-left: 6px; }
+
+/* Edición de usuarios */
+.aviso-fila { color: var(--ok); font-size: 11.5px; margin-top: 4px; }
+.todos-mercados {
+  border: 1px dashed var(--rule);
+  padding: 8px 10px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+/* Tasas: lectura de lo escrito, confirmación y edición en la fila */
+.tasa-lectura { padding: 10px 16px 0; font-size: 12.5px; color: var(--ink-soft); display: grid; gap: 4px; }
+.tasa-lectura .err, .tasa-lectura-fila .err { color: var(--err); font-weight: 700; }
+.tasa-lectura .tenue { color: var(--muted); }
+.tasa-error { margin: 10px 16px 12px; }
+.confirmar-tasa { display: inline-flex; margin-left: 10px; }
+.tabla-tasas td.editando input { width: 100%; min-width: 120px; height: 28px; }
+.tabla-tasas td.editando input.mono { text-align: right; }
+.tasa-lectura-fila { font-size: 11px; color: var(--ink-soft); margin-top: 4px; text-align: right; white-space: normal; }
+.nota-tasas { margin: 10px 16px 14px; font-size: 11.5px; color: var(--muted); }

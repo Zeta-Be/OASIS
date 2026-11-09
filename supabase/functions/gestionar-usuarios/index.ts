@@ -6,6 +6,11 @@
 //   desactivar   { usuario_id }                                     -> { usuario }
 //   reactivar    { usuario_id }                                     -> { usuario }
 //   nueva_clave  { usuario_id }                                     -> { usuario, clave }
+//   editar       { usuario_id, nombre, rol, proveedor_id?, mercados? }
+//                -> { usuario, mercados, acceso_cambio, sesiones_cerradas }
+//                El correo no se edita. Si cambia el acceso (rol, mercados o
+//                proveedor), fn_admin_editar_usuario cierra en la base las
+//                sesiones de ese login: no hace falta la llave secreta.
 //
 // Dos clientes, a propósito:
 //   * el del ADMIN (su JWT) para todo lo de la base: las funciones fn_admin_*
@@ -178,6 +183,25 @@ Deno.serve(async (req) => {
       return responder({ usuario });
     }
 
+    // ---- editar nombre, rol, mercados y proveedor
+    if (accion === "editar") {
+      const r = await rpc<{ mercados: number[]; acceso_cambio: boolean; sesiones_cerradas: number }>(
+        sb, "fn_admin_editar_usuario", {
+          p_usuario_id: id,
+          p_nombre: cuerpo.nombre ?? null,
+          p_rol: cuerpo.rol ?? null,
+          p_proveedor_id: cuerpo.proveedor_id ?? null,
+          p_mercados: Array.isArray(cuerpo.mercados) ? cuerpo.mercados : [],
+        });
+      const usuario = await leerUsuario(sb, id);
+      return responder({
+        usuario,
+        mercados: r.mercados,
+        acceso_cambio: r.acceso_cambio,
+        sesiones_cerradas: r.sesiones_cerradas,
+      });
+    }
+
     // ---- nueva contraseña temporal
     if (accion === "nueva_clave") {
       const actual = await leerUsuario(sb, id);
@@ -194,7 +218,7 @@ Deno.serve(async (req) => {
       return responder({ usuario, clave });
     }
 
-    return responder({ error: "accion: crear, desactivar, reactivar o nueva_clave" }, 400);
+    return responder({ error: "accion: crear, editar, desactivar, reactivar o nueva_clave" }, 400);
   } catch (e) {
     if (e instanceof Rechazo) return responder({ error: e.message }, e.estado);
     console.error(e);

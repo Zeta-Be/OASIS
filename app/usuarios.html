@@ -85,6 +85,7 @@
                     <button type="button" class="mini" :disabled="u._ocupado" @click="confirmar = null">No</button>
                   </template>
                   <template v-else>
+                    <button type="button" class="mini" :disabled="u._ocupado" @click="abrirEditar(u)">Editar</button>
                     <button v-if="u.activo && u.id !== yo.id" type="button" class="mini" :disabled="u._ocupado"
                             @click="pedir(u, 'desactivar')">Desactivar</button>
                     <button v-if="!u.activo" type="button" class="mini" :disabled="u._ocupado"
@@ -95,6 +96,7 @@
                   <span v-if="u._ocupado" class="pill prop">…</span>
                 </div>
                 <div v-if="u._error" class="campo-error">{{ u._error }}</div>
+                <div v-else-if="u._aviso" class="aviso-fila">{{ u._aviso }}</div>
               </td>
             </tr>
           </tbody>
@@ -102,14 +104,141 @@
       </div>
     </section>
 
-    <!-- Panel lateral: alta, o la contraseña temporal recién generada -->
+    <!-- Tasas de cambio: las usa el dashboard para la vista LATAM en USD -->
+    <section class="card tasas">
+      <div class="card-cab">
+        <h2>Tasas de cambio</h2>
+        <span class="estado-global">Moneda local por 1 USD. El dashboard usa la vigente de cada mercado.</span>
+      </div>
+
+      <form class="filtros tasa-nueva" @submit.prevent="agregarTasa" novalidate>
+        <div class="campo">
+          <label for="t-mercado">Mercado</label>
+          <select id="t-mercado" v-model="tasaNueva.mercado_id">
+            <option :value="null" disabled>{{ cargando ? 'Cargando…' : 'Elige el mercado' }}</option>
+            <option v-for="m in mercadosTasa" :key="m.id" :value="m.id">{{ m.codigo }} · {{ m.nombre }} · {{ m.moneda }}</option>
+          </select>
+        </div>
+        <div class="campo">
+          <label for="t-valor">Tasa (por 1 USD)</label>
+          <input id="t-valor" v-model="tasaNueva.valor" inputmode="decimal" autocomplete="off" placeholder="3.695,04">
+        </div>
+        <div class="campo">
+          <label for="t-desde">Rige desde</label>
+          <input id="t-desde" v-model="tasaNueva.vigente_desde" type="date">
+        </div>
+        <div class="campo boton-tasa">
+          <button class="btn p" type="submit" :disabled="cargando || tasaGuardando">{{ tasaGuardando ? 'Guardando…' : 'Agregar tasa' }}</button>
+        </div>
+      </form>
+      <!-- Antes de guardar: la vigente como referencia y cómo se leyó lo escrito -->
+      <div v-if="tasaNueva.mercado_id || tasaNueva.valor" class="tasa-lectura">
+        <div v-if="tasaNueva.mercado_id">
+          Vigente en {{ codigoMercado(tasaNueva.mercado_id) }}:
+          <template v-if="vigenteDe(tasaNueva.mercado_id)">
+            <strong class="mono">{{ formatoTasa(vigenteDe(tasaNueva.mercado_id).valor_por_usd) }} {{ monedaDe(tasaNueva.mercado_id) }}</strong>
+            por 1 USD, desde {{ fechaCorta(vigenteDe(tasaNueva.mercado_id).vigente_desde) }}
+          </template>
+          <template v-else>ninguna todavía</template>
+        </div>
+        <div v-if="lecturaNueva">
+          <template v-if="lecturaNueva.error"><span class="err">«{{ tasaNueva.valor }}»: {{ lecturaNueva.error }}</span></template>
+          <template v-else>
+            Se guardará: <strong class="mono">{{ lecturaNueva.texto }}</strong>
+            <span v-if="lecturaNueva.diferencia !== null" :class="{ err: lecturaNueva.grande }"> · {{ textoDiferencia(lecturaNueva.diferencia) }}</span>
+            <span v-if="lecturaNueva.ambiguo" class="tenue"> · «{{ tasaNueva.valor }}» podía leerse de dos formas: se tomó la más cercana a la vigente</span>
+          </template>
+        </div>
+      </div>
+      <div v-if="tasaNueva.confirmar && lecturaNueva && lecturaNueva.grande" class="alerta aviso tasa-error">
+        <strong>La tasa difiere {{ textoDiferencia(lecturaNueva.diferencia) }}.</strong>
+        ¿Guardar {{ lecturaNueva.texto }} de todos modos?
+        <span class="acciones-fila confirmar-tasa">
+          <button type="button" class="mini" :disabled="tasaGuardando" @click="agregarTasa">Sí, guardar</button>
+          <button type="button" class="mini" @click="tasaNueva.confirmar = false">Corregir</button>
+        </span>
+      </div>
+      <div v-if="tasaError" class="alerta error tasa-error">{{ tasaError }}</div>
+
+      <div class="tabla-envoltura">
+        <table class="tabla tabla-tasas">
+          <thead>
+            <tr>
+              <th class="calc">Mercado</th>
+              <th class="calc num">Tasa por USD</th>
+              <th class="calc">Rige desde</th>
+              <th class="calc">Estado</th>
+              <th class="calc">Registrada por</th>
+              <th class="estado-col"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!tasasVista.length"><td colspan="6" class="vacio">{{ cargando ? 'Cargando…' : 'No hay tasas.' }}</td></tr>
+            <tr v-for="t in tasasVista" :key="t.id" :class="{ inactivo: t.estado === 'anterior' && !(tasaEditar && tasaEditar.id === t.id) }">
+              <td class="calc">{{ codigoMercado(t.mercado_id) }} · {{ t.moneda }}</td>
+              <!-- Editar: valor y fecha en la misma fila -->
+              <template v-if="tasaEditar && tasaEditar.id === t.id">
+                <td class="calc num editando">
+                  <input v-model="tasaEditar.valor" class="mono" inputmode="decimal" autocomplete="off"
+                         aria-label="Tasa por USD" @keydown.enter.prevent="guardarTasa">
+                  <div v-if="lecturaEditar" class="tasa-lectura-fila">
+                    <span v-if="lecturaEditar.error" class="err">{{ lecturaEditar.error }}</span>
+                    <template v-else>
+                      {{ lecturaEditar.texto }}
+                      <span v-if="lecturaEditar.diferencia !== null" :class="{ err: lecturaEditar.grande }"><br>{{ textoDiferencia(lecturaEditar.diferencia) }}</span>
+                    </template>
+                  </div>
+                </td>
+                <td class="calc editando"><input v-model="tasaEditar.vigente_desde" type="date" aria-label="Rige desde"></td>
+              </template>
+              <template v-else>
+                <td class="calc num mono">{{ formatoTasa(t.valor_por_usd) }}</td>
+                <td class="calc mono">{{ fechaCorta(t.vigente_desde) }}</td>
+              </template>
+              <td class="calc"><span class="pill" :class="{ ok: t.estado === 'vigente', prop: t.estado === 'futura' }">{{ t.estado }}</span></td>
+              <td class="calc">{{ t.autor }} <span class="mono tenue">{{ fechaCorta(t.actualizado_en) }}</span></td>
+              <td class="estado-col">
+                <div class="acciones-fila">
+                  <template v-if="tasaEditar && tasaEditar.id === t.id">
+                    <template v-if="tasaEditar.confirmar && lecturaEditar && lecturaEditar.grande">
+                      <span class="pregunta">¿Guardar? Difiere {{ textoDiferencia(lecturaEditar.diferencia) }}</span>
+                      <button type="button" class="mini peligro" :disabled="tasaEditar.guardando" @click="guardarTasa">Sí, guardar</button>
+                      <button type="button" class="mini" @click="tasaEditar.confirmar = false">Corregir</button>
+                    </template>
+                    <template v-else>
+                      <button type="button" class="mini" :disabled="tasaEditar.guardando" @click="guardarTasa">{{ tasaEditar.guardando ? 'Guardando…' : 'Guardar' }}</button>
+                      <button type="button" class="mini" :disabled="tasaEditar.guardando" @click="tasaEditar = null">Cancelar</button>
+                    </template>
+                  </template>
+                  <template v-else-if="tasaBorrar === t.id">
+                    <span class="pregunta">¿Borrar esta tasa?</span>
+                    <button type="button" class="mini peligro" @click="borrarTasa(t)">Sí</button>
+                    <button type="button" class="mini" @click="tasaBorrar = null">No</button>
+                  </template>
+                  <template v-else>
+                    <button type="button" class="mini" @click="abrirEditarTasa(t)">Editar</button>
+                    <button type="button" class="mini" :disabled="!!t.noBorrar" :title="t.noBorrar || 'Borrar esta tasa'"
+                            @click="tasaBorrar = t.id; tasaEditar = null">Borrar</button>
+                  </template>
+                </div>
+                <div v-if="tasaEditar && tasaEditar.id === t.id && tasaEditar.error" class="campo-error">{{ tasaEditar.error }}</div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="nota-tasas">Para un cambio de tasa, agrega una nueva con su fecha: la anterior queda como historia.
+        «Editar» es para corregir una mal escrita. Los dos quedan en la auditoría.</p>
+    </section>
+
+    <!-- Panel lateral: alta, edición, o la contraseña temporal recién generada -->
     <transition name="panel">
       <div v-if="panel" class="panel-fondo" @pointerdown.self="cerrarPanel">
         <aside class="panel" role="dialog" aria-labelledby="panel-titulo">
           <header class="panel-cab">
             <div>
-              <div class="eyebrow">{{ panel.clave ? panel.correo : 'Alta con login y contraseña temporal' }}</div>
-              <h2 id="panel-titulo">{{ panel.clave ? panel.titulo : 'Nuevo usuario' }}</h2>
+              <div class="eyebrow">{{ panel.clave || panel.modo === 'editar' ? panel.correo : 'Alta con login y contraseña temporal' }}</div>
+              <h2 id="panel-titulo">{{ panel.clave ? panel.titulo : panel.modo === 'editar' ? 'Editar usuario' : 'Nuevo usuario' }}</h2>
             </div>
             <button type="button" class="cerrar" title="Cerrar (Esc)" @click="cerrarPanel">×</button>
           </header>
@@ -129,13 +258,18 @@
             </div>
           </div>
 
-          <!-- Alta -->
-          <form v-else class="panel-cuerpo" id="form-usuario" @submit.prevent="crear" novalidate>
-            <div class="campo ancho-2" :class="{ err: errPanel('correo') }">
+          <!-- Alta o edición -->
+          <form v-else class="panel-cuerpo" id="form-usuario" @submit.prevent="guardar" novalidate>
+            <div v-if="panel.modo === 'nuevo'" class="campo ancho-2" :class="{ err: errPanel('correo') }">
               <label for="p-correo">Correo</label>
               <input id="p-correo" v-model="panel.correo" type="email" autocomplete="off" placeholder="nombre@empresa.com"
                      @blur="tocar('correo')">
               <div class="campo-error" v-if="errPanel('correo')">{{ errPanel('correo') }}</div>
+            </div>
+            <div v-else class="campo ancho-2">
+              <label for="p-correo-fijo">Correo</label>
+              <input id="p-correo-fijo" :value="panel.correo" class="mono" disabled>
+              <div class="campo-pista">El correo no se edita: si cambia, crea otro usuario.</div>
             </div>
             <div class="campo ancho-2" :class="{ err: errPanel('nombre') }">
               <label for="p-nombre">Nombre</label>
@@ -144,33 +278,39 @@
             </div>
             <div class="campo ancho-2" :class="{ err: errPanel('rol') }">
               <label for="p-rol">Rol</label>
-              <select id="p-rol" v-model="panel.rol" @blur="tocar('rol')">
-                <option :value="null"></option>
-                <option v-for="r in ROLES" :key="r.valor" :value="r.valor">{{ r.etiqueta }} — {{ r.ayuda }}</option>
+              <select id="p-rol" v-model="panel.rol" :disabled="esYo" @blur="tocar('rol')" @change="tocar('rol')">
+                <option :value="null" disabled>Elige el rol</option>
+                <option v-for="r in rolesPanel" :key="r.valor" :value="r.valor">{{ r.etiqueta }} — {{ r.ayuda }}</option>
               </select>
               <div class="campo-error" v-if="errPanel('rol')">{{ errPanel('rol') }}</div>
+              <div class="campo-pista" v-else-if="esYo">No puedes cambiar tu propio rol: pídeselo a otro Admin.</div>
             </div>
 
             <template v-if="panel.rol === 'PROVEEDOR'">
               <div class="campo">
                 <label for="p-mercado-prov">Mercado</label>
-                <select id="p-mercado-prov" v-model="panel.mercadoProveedor">
+                <select id="p-mercado-prov" v-model="panel.mercadoProveedor" @change="cambiarMercadoProveedor">
                   <option v-for="m in mercados" :key="m.id" :value="m.id">{{ m.codigo }} · {{ m.nombre }}</option>
                 </select>
               </div>
               <div class="campo" :class="{ err: errPanel('proveedor_id') }">
                 <label for="p-proveedor">Proveedor</label>
                 <select id="p-proveedor" v-model="panel.proveedor_id" @blur="tocar('proveedor_id')">
-                  <option :value="null"></option>
-                  <option v-for="p in proveedoresDelMercado" :key="p.id" :value="p.id">{{ p.nombre }}</option>
+                  <option :value="null" disabled>Elige el proveedor</option>
+                  <option v-for="p in proveedoresDelMercado" :key="p.id" :value="p.id">{{ p.nombre }}{{ p.activo ? '' : ' (inactivo)' }}</option>
                 </select>
                 <div class="campo-error" v-if="errPanel('proveedor_id')">{{ errPanel('proveedor_id') }}</div>
               </div>
               <div class="ancho-2 campo-pista">Ve solo los materiales de las compras de ese proveedor.</div>
             </template>
+            <div v-else-if="panel.rol === 'ADMIN' || panel.rol === 'LECTURA'" class="campo ancho-2">
+              <div class="etiqueta">Mercados</div>
+              <div class="todos-mercados">Todos: {{ panel.rol === 'ADMIN' ? 'un Admin' : 'Lectura' }} ve todos los mercados, no se eligen.</div>
+            </div>
             <div v-else-if="panel.rol" class="campo ancho-2" :class="{ err: errPanel('mercados') }">
-              <label for="p-mercados">Mercados<span v-if="panel.rol === 'ADMIN'" class="opcional">opcional: un Admin ve todos</span></label>
-              <seleccion-multiple id="p-mercados" v-model="panel.mercados" :opciones="opcionesMercado"></seleccion-multiple>
+              <label for="p-mercados">Mercados</label>
+              <seleccion-multiple id="p-mercados" v-model="panel.mercados" :opciones="opcionesMercado"
+                                  texto-vacio="Ninguno: elige al menos uno" texto-limpiar="Quitar todos"></seleccion-multiple>
               <div class="campo-error" v-if="errPanel('mercados')">{{ errPanel('mercados') }}</div>
             </div>
           </form>
@@ -178,9 +318,19 @@
           <footer class="panel-pie">
             <div v-if="panel.error" class="alerta error">{{ panel.error }}</div>
             <div v-else-if="!panel.clave && panel.intento && hayErrores" class="alerta error">Revisa los campos marcados.</div>
+            <div v-else-if="cambiosAcceso.length" class="alerta aviso">
+              <strong>Cambia su acceso</strong> ({{ cambiosAcceso.join(' · ') }}).
+              Al guardar se cierran sus sesiones abiertas: tendrá que volver a entrar y verá lo nuevo.
+            </div>
             <div class="botones">
               <template v-if="panel.clave">
                 <button type="button" class="btn p" @click="cerrarPanel">Listo</button>
+              </template>
+              <template v-else-if="panel.modo === 'editar'">
+                <button type="button" class="btn" :disabled="panel.guardando" @click="cerrarPanel">Cancelar</button>
+                <button type="submit" form="form-usuario" class="btn p" :disabled="panel.guardando || !hayCambios">
+                  {{ panel.guardando ? 'Guardando…' : 'Guardar cambios' }}
+                </button>
               </template>
               <template v-else>
                 <button type="button" class="btn" :disabled="panel.guardando" @click="cerrarPanel">Cancelar</button>

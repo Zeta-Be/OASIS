@@ -22,7 +22,11 @@ Uso:
 
 Opciones:
     --mercado MLC     mercado a cargar; el ID del Sheets sale de mercados.json
-    --todos           todos los de mercados.json, uno por uno (cada uno en su
+    --bu MP           con --mercado: cargar el Flow de Mercado Pago de ese
+                      mercado (por defecto ML). Las compras MP se guardan con
+                      el prefijo MP- (MP-001, materiales MP-001-A) para no
+                      chocar con las ML del mismo mercado
+    --todos           todos los de mercados.json (cada mercado y BU en su
                       transacción: si uno falla, los demás siguen)
     --sheet ID        otro Sheets para --mercado (no el de mercados.json)
     archivo.xlsx      un Excel descargado, con --mercado
@@ -37,6 +41,9 @@ Opciones:
 
 El mercado se valida contra la celda PAÍS del Flow (C3) y contra la tabla
 mercados: si no coinciden, se detiene sin tocar nada.
+
+En mercados.json cada mercado es el ID de su Sheets de Mercado Libre, o un
+objeto {"ML": id, "MP": id} cuando también tiene Flow de Mercado Pago.
 """
 
 import argparse
@@ -148,6 +155,14 @@ GLOSARIO_COLS = {
     "nombre_calendario": "NOMBRE DE CAMPANA EN CALENDARIO", "mercado": "MERCADO",
     "categorizacion": "CATEGORIZACION", "nombre_unico": "NOMBRE UNICO DE CAMPANA",
     "matt_campaign_type": "MATT CAMPAIGN TYPE",
+}
+
+# El Glosario de los Sheets MP tiene otras columnas: BU en vez de MATT CAMPAIGN
+# TYPE. Sus filas solo se AGREGAN al glosario (nunca pisan las de ML).
+GLOSARIO_COLS_MP = {
+    "nombre_calendario": "NOMBRE DE CAMPANA EN CALENDARIO", "mercado": "MERCADO",
+    "categorizacion": "CATEGORIZACION", "nombre_unico": "NOMBRE UNICO DE CAMPANA",
+    "bu": "BU",
 }
 
 
@@ -393,11 +408,16 @@ def parecido_b(a, b):
 # ---------------------------------------------------------------------------
 
 class Carga:
-    def __init__(self, conn, wb, mercado_codigo, dry_run=False):
+    def __init__(self, conn, wb, mercado_codigo, dry_run=False, bu="ML"):
         self.cur = conn.cursor()
         self.conn = conn
         self.wb = wb
         self.mercado_codigo = mercado_codigo
+        self.bu = bu
+        # Las compras de Mercado Pago llevan prefijo: MP-001, y sus materiales
+        # MP-001-A. Así no chocan con las ML del mismo mercado y BI las
+        # distingue a simple vista.
+        self.prefijo = "" if bu == "ML" else bu + "-"
         self.dry_run = dry_run
         self.avisos = defaultdict(list)      # se listan con los primeros 10
         self.notas = Counter()               # normalizaciones en silencio: solo conteo
@@ -405,7 +425,8 @@ class Carga:
 
         self.flow_ini, self.FLOW = localizar(wb["Flow"], 1, "ID", FLOW_COLS, "Flow")
         self.trk_ini,  self.TRK  = localizar(wb["Tracking"], 1, "ID FLOW", TRACKING_COLS, "Tracking")
-        self.glo_ini,  self.GLO  = localizar(wb["Glosario"], 3, "MERCADO", GLOSARIO_COLS, "Glosario")
+        self.glo_ini,  self.GLO  = localizar(wb["Glosario"], 3, "MERCADO",
+                                              GLOSARIO_COLS if bu == "ML" else GLOSARIO_COLS_MP, "Glosario")
 
         self.cur.execute("SELECT id, moneda FROM mercados WHERE codigo = %s", (mercado_codigo,))
         fila = self.cur.fetchone()
@@ -424,8 +445,19 @@ class Carga:
         self.cur.execute("SELECT enumlabel FROM pg_enum WHERE enumtypid = 'medio_enum'::regtype")
         self.enums["medio"] = {r[0] for r in self.cur.fetchall()}
 
-        self.cur.execute("SELECT upper(btrim(texto_flow)), taxonomia FROM campanas_alias WHERE mercado_id = %s",
-                         (self.mercado_id,))
+        # Alias de campañas, solo los de la BU que se está cargando
+        # (sql/mercado_pago_alias.sql). Si la columna todavía no existe, se
+        # leen todos, como antes.
+        self.cur.execute("""
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'campanas_alias' AND column_name = 'bu'
+        """)
+        if self.cur.fetchone()[0]:
+            self.cur.execute("SELECT upper(btrim(texto_flow)), taxonomia FROM campanas_alias"
+                             " WHERE mercado_id = %s AND bu = %s", (self.mercado_id, self.bu))
+        else:
+            self.cur.execute("SELECT upper(btrim(texto_flow)), taxonomia FROM campanas_alias WHERE mercado_id = %s",
+                             (self.mercado_id,))
         self.alias = dict(self.cur.fetchall())
         self.unificaciones()
 
@@ -478,6 +510,11 @@ class Carga:
 
     # -- filas del Flow ----------------------------------------------------
 
+    # Cada BU compara solo con sus propias compras: las ML no llevan prefijo
+    # y las MP empiezan por MP-.
+    def filtro_bu(self, col):
+        return f"{col} NOT LIKE 'MP-%%'" if self.bu == "ML" else f"{col} LIKE 'MP-%%'"
+
     def filas_flow(self):
         """Filas del Flow con ID y algo más. Las que solo tienen el ID (la
         plantilla numera filas vacías) se saltan y se cuentan."""
@@ -497,14 +534,14 @@ class Carga:
         detectar_renumeracion). Solo lee: corre antes de escribir nada."""
         ws = self.wb["Flow"]
         g = lambda r, k: ws.cell(row=r, column=self.FLOW[k]).value
-        hoja = {texto(g(r, "codigo")): huella_compra(espacios(g(r, "ubicacion")), fecha(g(r, "fecha_inicio")),
-                                                     fecha(g(r, "fecha_fin")), numero(g(r, "valor_total")))
+        hoja = {self.prefijo + texto(g(r, "codigo")): huella_compra(espacios(g(r, "ubicacion")), fecha(g(r, "fecha_inicio")),
+                                                                    fecha(g(r, "fecha_fin")), numero(g(r, "valor_total")))
                 for r in filas_flow}
         self.cur.execute("""
             SELECT c.codigo, c.ubicacion, c.fecha_inicio, c.fecha_fin, c.valor_total
             FROM compras c
             WHERE c.mercado_id = %s AND EXISTS (SELECT 1 FROM materiales m WHERE m.compra_id = c.id)
-        """, (self.mercado_id,))
+              AND """ + self.filtro_bu("c.codigo"), (self.mercado_id,))
         base = {r[0]: huella_compra(*r[1:]) for r in self.cur.fetchall()}
         return detectar_renumeracion(base, hoja)
 
@@ -518,11 +555,13 @@ class Carga:
             nombre = texto(ws.cell(row=r, column=self.GLO["nombre_unico"]).value)
             if not mercado or not nombre:
                 continue
+            if self.bu == "MP" and normalizar(ws.cell(row=r, column=self.GLO["bu"]).value) != "MP":
+                continue
             datos.append((
                 mercado.upper(), nombre,
                 texto(ws.cell(row=r, column=self.GLO["nombre_calendario"]).value),
                 texto(ws.cell(row=r, column=self.GLO["categorizacion"]).value),
-                texto(ws.cell(row=r, column=self.GLO["matt_campaign_type"]).value),
+                texto(ws.cell(row=r, column=self.GLO["matt_campaign_type"]).value) if self.bu == "ML" else None,
             ))
 
         vistos = set()
@@ -544,6 +583,13 @@ class Carga:
                 categorizacion     = EXCLUDED.categorizacion,
                 matt_campaign_type = EXCLUDED.matt_campaign_type,
                 sincronizado_en    = now()
+        """ if self.bu == "ML" else """
+            INSERT INTO campanas
+                (mercado_id, nombre_unico, nombre_calendario,
+                 categorizacion, matt_campaign_type, sincronizado_en)
+            SELECT m.id, %s, %s, %s, %s, now()
+            FROM mercados m WHERE m.codigo = %s
+            ON CONFLICT (mercado_id, nombre_unico) DO NOTHING
         """, [(d[1], d[2], d[3], d[4], d[0]) for d in unicos])
 
         self.stats["campanas"] = len(unicos)
@@ -754,7 +800,7 @@ class Carga:
         pendientes = []
 
         for r in filas_flow:
-            codigo = texto(g(r, "codigo"))
+            codigo = self.prefijo + texto(g(r, "codigo"))
             fuera = {}
 
             # Fechas: las dos o ninguna; invertidas entran sin fechas (alerta).
@@ -885,7 +931,7 @@ class Carga:
 
         for r in filas(ws, self.trk_ini, self.TRK["material"]):
             g = lambda k: ws.cell(row=r, column=self.TRK[k]).value
-            codigo = texto(g("material"))
+            codigo = self.prefijo + texto(g("material"))
             leidos += 1
 
             mat_codigo, secuencia = secuencia_desde_codigo(codigo)
@@ -947,9 +993,10 @@ class Carga:
     def huerfanos(self):
         """Filas que existen en la base pero ya no en el Sheets. No se borran solas."""
         ws = self.wb["Flow"]
-        codigos = {texto(ws.cell(row=r, column=self.FLOW["codigo"]).value)
+        codigos = {self.prefijo + texto(ws.cell(row=r, column=self.FLOW["codigo"]).value)
                    for r in filas(ws, self.flow_ini, self.FLOW["codigo"])}
-        self.cur.execute("SELECT codigo FROM compras WHERE mercado_id = %s", (self.mercado_id,))
+        self.cur.execute("SELECT codigo FROM compras WHERE mercado_id = %s AND " + self.filtro_bu("codigo"),
+                         (self.mercado_id,))
         for (c,) in self.cur.fetchall():
             if c not in codigos:
                 self.avisos["compra en la base que ya no está en el Sheets (no se borra)"].append(c)
@@ -959,12 +1006,11 @@ class Carga:
         for r in filas(wt, self.trk_ini, self.TRK["material"]):
             mat, sec = secuencia_desde_codigo(texto(wt.cell(row=r, column=self.TRK["material"]).value))
             if sec:
-                en_sheets.add((mat, sec))
+                en_sheets.add((self.prefijo + mat, sec))
         self.cur.execute("""
             SELECT m.codigo, e.secuencia
             FROM materiales e JOIN compras m ON m.id = e.compra_id
-            WHERE m.mercado_id = %s
-        """, (self.mercado_id,))
+            WHERE m.mercado_id = %s AND """ + self.filtro_bu("m.codigo"), (self.mercado_id,))
         for mat, sec in self.cur.fetchall():
             if (mat, sec) not in en_sheets:
                 self.avisos["material en la base que ya no está en el Sheets (no se borra)"].append(
@@ -985,7 +1031,8 @@ class Carga:
     def reporte(self):
         s = self.stats
         print("\n" + "=" * 70)
-        print(f"  {self.mercado_codigo} ({self.moneda})" + ("  —  SIMULACIÓN, nada quedó guardado" if self.dry_run else "  —  CARGADO"))
+        print(f"  {self.mercado_codigo} ({self.moneda})" + ("  ·  Mercado Pago" if self.bu == "MP" else "")
+              + ("  —  SIMULACIÓN, nada quedó guardado" if self.dry_run else "  —  CARGADO"))
         print("=" * 70)
         print(f"  Compras:     {s['compras_leidas']:>5} leídas en el Flow · {s['filas_vacias']} filas solo con ID saltadas"
               f" · {s['compras']} entran")
@@ -1022,15 +1069,16 @@ class Carga:
 
 # ---------------------------------------------------------------------------
 
-def cargar_mercado(mercado, wb, dry_run, ensayo_sql, forzar_renumeracion=False):
-    """Carga un mercado en su propia transacción. Devuelve True si terminó bien."""
+def cargar_mercado(mercado, wb, dry_run, ensayo_sql, forzar_renumeracion=False, bu="ML"):
+    """Carga un mercado y BU en su propia transacción. Devuelve True si terminó bien."""
+    etiqueta = mercado + (" MP" if bu == "MP" else "")
     # Todo lo del Sheets se lee antes de abrir la transacción: así los bloqueos
     # en la base duran segundos, no lo que tarde Google.
     for hoja in ("Flow", "Tracking", "Glosario"):
         wb[hoja]
     pais = pais_del_flow(wb["Flow"])
     if pais != mercado:
-        print(f"  [{mercado}] El Flow dice PAÍS = {pais!r}, no {mercado}. No se cargó nada.")
+        print(f"  [{etiqueta}] El Flow dice PAÍS = {pais!r}, no {mercado}. No se cargó nada.")
         return False
 
     conn = psycopg2.connect()
@@ -1046,12 +1094,12 @@ def cargar_mercado(mercado, wb, dry_run, ensayo_sql, forzar_renumeracion=False):
         precalculada = cur.fetchone()[0]
         if precalculada:
             cur.execute("SELECT set_config('oasis.sin_recalculo', 'on', true)")
-        carga = Carga(conn, wb, mercado, dry_run)
+        carga = Carga(conn, wb, mercado, dry_run, bu)
         utiles = carga.filas_flow()
         movidas = carga.renumeracion(utiles)
         casos = [f"{c} → ahora en {', '.join(otros)}" for c, otros in movidas]
         if len(movidas) >= RENUMERACION_MINIMO and not forzar_renumeracion:
-            print(f"  [{mercado}] POSIBLE RENUMERACIÓN: {len(movidas)} compras con materiales aparecen en el Flow "
+            print(f"  [{etiqueta}] POSIBLE RENUMERACIÓN: {len(movidas)} compras con materiales aparecen en el Flow "
                   "bajo otro ID (misma ubicación, fechas y valor). No se cargó nada de este mercado.")
             for x in casos[:15]:
                 print(f"      {x}")
@@ -1073,6 +1121,8 @@ def cargar_mercado(mercado, wb, dry_run, ensayo_sql, forzar_renumeracion=False):
             cur.execute("SELECT public.fn_recalcular_inversion_mercado(%s::smallint)", (carga.mercado_id,))
             carga.stats["inversion"] = cur.fetchone()[0]
         carga.alertas()
+        # El dashboard muestra «Datos al …» con esto (sql/dashboard.sql).
+        cur.execute("UPDATE mercados SET ultima_carga = now() WHERE id = %s", (carga.mercado_id,))
 
         if dry_run:
             conn.rollback()
@@ -1098,6 +1148,8 @@ def main():
     ap.add_argument("--ensayo-sql", help="SQL a aplicar dentro de la transacción (implica --dry-run)")
     ap.add_argument("--forzar-renumeracion", action="store_true",
                     help="carga aunque el freno vea una posible renumeración (después de revisarla)")
+    ap.add_argument("--bu", choices=["ML", "MP"], default=None,
+                    help="con --mercado: qué Flow cargar (por defecto ML)")
     args = ap.parse_args()
 
     if bool(args.mercado) == bool(args.todos):
@@ -1107,32 +1159,41 @@ def main():
     dry_run = args.dry_run or bool(args.ensayo_sql)
 
     hojas = json.load(open(os.path.join(RAIZ, "mercados.json"), encoding="utf-8"))
-    hojas = {k: v for k, v in hojas.items() if not k.startswith("_")}
-    mercados = sorted(hojas) if args.todos else [args.mercado.upper()]
+    # Cada mercado: el ID de su Sheets ML, o {"ML": id, "MP": id}.
+    hojas = {k: (v if isinstance(v, dict) else {"ML": v}) for k, v in hojas.items() if not k.startswith("_")}
+
+    if args.todos:
+        if args.bu:
+            ap.error("--bu va con --mercado; --todos carga todas las BUs de mercados.json")
+        trabajos = [(mk, bu) for mk in sorted(hojas) for bu in ("ML", "MP") if bu in hojas[mk]]
+    else:
+        trabajos = [(args.mercado.upper(), args.bu or "ML")]
 
     fallas = []
-    for mk in mercados:
+    for mk, bu in trabajos:
+        etiqueta = mk + (" MP" if bu == "MP" else "")
         # Con --todos, un Sheets que no abre o un encabezado que falta (sys.exit)
-        # detiene solo ese mercado, no los demás.
+        # detiene solo ese mercado y BU, no los demás.
         try:
             if args.archivo:
                 wb = openpyxl.load_workbook(args.archivo, data_only=True)
             else:
-                sid = args.sheet or hojas.get(mk)
+                sid = args.sheet or hojas.get(mk, {}).get(bu)
                 if not sid:
-                    sys.exit(f"{mk} no está en mercados.json; agrégalo o usa --sheet ID.")
-                print(f"  [{mk}] Leyendo Google Sheets {sid} en vivo…")
+                    sys.exit(f"{mk} no tiene Sheets de {bu} en mercados.json; agrégalo o usa --sheet ID.")
+                print(f"  [{etiqueta}] Leyendo Google Sheets {sid} en vivo…")
                 wb = _LibroSheets(sid, args.credenciales)
-            if not cargar_mercado(mk, wb, dry_run, args.ensayo_sql, args.forzar_renumeracion):
-                fallas.append(mk)
+            if not cargar_mercado(mk, wb, dry_run, args.ensayo_sql, args.forzar_renumeracion, bu):
+                fallas.append(etiqueta)
         except (Exception, SystemExit) as e:
-            print(f"  [{mk}] FALLÓ, no se cargó nada de este mercado: {e}")
-            fallas.append(mk)
+            print(f"  [{etiqueta}] FALLÓ, no se cargó nada de este mercado: {e}")
+            fallas.append(etiqueta)
             if not args.todos:
                 raise
 
-    if len(mercados) > 1:
-        print("Resumen: " + ", ".join(f"{m} {'FALLÓ' if m in fallas else 'ok'}" for m in mercados))
+    if len(trabajos) > 1:
+        print("Resumen: " + ", ".join(f"{mk}{' MP' if bu == 'MP' else ''} {'FALLÓ' if (mk + (' MP' if bu == 'MP' else '')) in fallas else 'ok'}"
+                                      for mk, bu in trabajos))
     sys.exit(1 if fallas else 0)
 
 

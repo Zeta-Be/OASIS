@@ -121,7 +121,13 @@ async function traerTodo(consulta) {
 // ------------------------------------------------------------------ Selección múltiple
 // Desplegable con casillas. Vacío = "Todos".
 const SeleccionMultiple = {
-  props: { modelValue: { type: Array, default: () => [] }, opciones: Array, id: String },
+  // textoVacio y textoLimpiar: como filtro, nada elegido = «Todos». En un
+  // formulario donde elegir es obligatorio (mercados de un usuario), «Ninguno».
+  props: {
+    modelValue: { type: Array, default: () => [] }, opciones: Array, id: String,
+    textoVacio: { type: String, default: 'Todos' },
+    textoLimpiar: { type: String, default: 'Limpiar · ver todos' },
+  },
   emits: ['update:modelValue'],
   // `sel` es una copia local: dos clics seguidos no se pisan esperando al padre.
   data() { return { abierto: false, sel: [...this.modelValue] }; },
@@ -129,7 +135,7 @@ const SeleccionMultiple = {
   computed: {
     resumen() {
       const n = this.sel.length;
-      if (n === 0) return 'Todos';
+      if (n === 0) return this.textoVacio;
       if (n === 1) {
         const o = this.opciones.find(x => x.valor === this.sel[0]);
         return o ? o.etiqueta : '1 seleccionado';
@@ -164,7 +170,7 @@ const SeleccionMultiple = {
         </label>
         <div v-if="!opciones.length" class="multi-vacio">Sin opciones</div>
         <button v-if="modelValue.length" type="button" class="multi-limpiar"
-                @click="$emit('update:modelValue', [])">Limpiar · ver todos</button>
+                @click="$emit('update:modelValue', [])">{{ textoLimpiar }}</button>
       </div>
     </div>`,
 };

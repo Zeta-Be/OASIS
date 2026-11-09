@@ -7,3 +7,7 @@ __pycache__/
 .DS_Store
 credenciales_google.json
 credenciales_google.json
+
+# Material de referencia local (dashboards con datos de cliente): nunca al repositorio
+referencia/
+referencias/

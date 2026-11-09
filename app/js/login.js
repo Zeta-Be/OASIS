@@ -183,7 +183,7 @@ async function continuar() {
   }
 
   if (estado.session && estado.usuario) {
-    window.location.replace(paginaDeInicio(estado.usuario));
+    window.location.replace(paginaDeVuelta(estado.usuario));
     return;
   }
 
