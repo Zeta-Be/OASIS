@@ -704,13 +704,21 @@ function xtab(el, titulo, recs, fila, col, colLbl, cur, conShare, cabFila) {
 // (la escala común); en moneda local solo cambian las celdas por país de la
 // tabla, cada una en su moneda. Nunca se suman monedas locales entre países.
 
+// El original escribe los países en mayúsculas y sin tildes (ARGENTINA,
+// MEXICO); la base los manda capitalizados (Argentina, México). Se normalizan
+// al entrar para que los colores (PCOL), el orden (PORD) y la vista queden
+// idénticos al original.
+function paisTxt(v) {
+  return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
+}
+
 function prepararLatam(d) {
   d.rows = ((d && d.filas) || []).map((f) => ({
     prov: vacioTxt(f.prov) ? '—' : String(f.prov),
     tc: vacioTxt(f.tc) ? '—' : String(f.tc),
     cli: vacioTxt(f.cli) ? '—' : String(f.cli),
     mes: Number(f.mes) || 0,
-    pais: vacioTxt(f.pais) ? String(f.mercado || '—') : String(f.pais),
+    pais: paisTxt(vacioTxt(f.pais) ? f.mercado : f.pais) || '—',
     mercado: String(f.mercado || ''),
     moneda: String(f.moneda || ''),
     inv: Number(f.inv) || 0,
