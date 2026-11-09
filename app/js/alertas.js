@@ -74,6 +74,8 @@ async function iniciar() {
       ubicaciones: new Map(),   // compra_id -> ubicación
       filtros: { mercado: '' },
       duplicados: [],
+      porConfirmar: [],         // alias provisionales (campanas_alias.por_confirmar)
+      pcMensaje: '',
       analizando: false,
       dup: { mensaje: '', clase: '' },
       taxonomias: {},           // texto del Flow -> { valor, ocupado, error, ok }
@@ -113,6 +115,9 @@ async function iniciar() {
       },
       puedeEscribir() { return ['PLANNING', 'ZB', 'ADMIN'].includes(this.usuario.rol); },
       // Proveedores primero (se unifican antes que los soportes), luego por confianza.
+      porConfirmarVisibles() {
+        return this.porConfirmar.filter(a => !this.filtros.mercado || a.mercado_id === this.filtros.mercado);
+      },
       duplicadosVisibles() {
         const id = this.filtros.mercado;
         return this.duplicados
@@ -219,6 +224,35 @@ async function iniciar() {
         actualizarAlertasBarra(this.codigoFiltro);
       },
 
+      // ------------------------------------------------- Taxonomías por confirmar
+      // Alias provisionales: la carga los usa para no frenarse; aquí se confirma
+      // la taxonomía buena y fn_asignar_taxonomia re-apunta lo ya cargado.
+      fechaCorta(iso) { return (iso || '').slice(0, 10).split('-').reverse().join('/'); },
+      async cargarPorConfirmar() {
+        const filas = await traerTodo(() => sb.from('campanas_alias')
+          .select('id, mercado_id, bu, texto_flow, taxonomia, nota, creado_en')
+          .eq('por_confirmar', true).order('id'));
+        this.porConfirmar = filas.map(a => ({ ...a, _valor: a.taxonomia, _ocupado: false, _error: '' }));
+      },
+      async confirmarTaxonomia(a) {
+        a._error = '';
+        const mk = this.codigoMercado(a.mercado_id);
+        const tax = a._valor.trim().toUpperCase();
+        if (!new RegExp(`^${mk}_${a.bu}_[A-Z0-9-]+(_[A-Z0-9-]+){3,}$`).test(tax)) {
+          a._error = `Formato: ${mk}_${a.bu}_TIPO_AUDIENCIA_NOMBRE_X, en mayúsculas y sin espacios`;
+          return;
+        }
+        a._ocupado = true;
+        const { data, error } = await sb.rpc('fn_asignar_taxonomia', {
+          p_mercado_id: a.mercado_id, p_texto: a.texto_flow, p_taxonomia: tax, p_bu: a.bu,
+        });
+        a._ocupado = false;
+        if (error) { a._error = 'No se guardó: ' + await mensajeDe(error); return; }
+        this.porConfirmar = this.porConfirmar.filter(x => x.id !== a.id);
+        this.pcMensaje = `${a.texto_flow} (${a.bu}): quedó ${tax}. ${data} ${data === 1 ? 'compra re-apuntada' : 'compras re-apuntadas'}.`;
+        await this.recargarAlertas();
+      },
+
       // ---------------------------------------------------------- Duplicados
       codigoMercado(id) { const m = this.mercadosPorId.get(id); return m ? m.codigo : ''; },
       invisible(t) { return INVISIBLES.test(t); },
@@ -317,6 +351,7 @@ async function iniciar() {
           this.alertas = alertas;
           this.ubicaciones = new Map(compras.map(c => [c.id, c.ubicacion]));
           await this.cargarDuplicados();
+          await this.cargarPorConfirmar();
           // Alertas es por mercado: sin «Todos». Sin mercado recordado, el propio o el primero.
           const inicial = mercadoInicial(this.misMercados, propios.map(p => p.mercado_id));
           this.filtros.mercado = inicial || (this.misMercados[0] || {}).id || '';
