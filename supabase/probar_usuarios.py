@@ -10,7 +10,9 @@ la pantalla Usuarios.
 1. Crea un ADMIN temporal directo en la base (fila en usuarios y login en Auth
    con una contraseña aleatoria que no se imprime).
 2. Con su sesión recorre el flujo: crear, validaciones, entrar con la temporal,
-   nueva contraseña, desactivar, reactivar, cambio de contraseña del usuario.
+   nueva contraseña, desactivar, reactivar, cambio de contraseña del usuario y
+   editar (mercados, nombre, rol; reglas; cierre de sesiones).
+   Necesita también sql/usuarios_edicion.sql aplicado.
 3. Comprueba que un no-ADMIN recibe 403 y que la auditoría registra al ADMIN.
 4. Busca la llave secreta en el repositorio (git grep, también en el historial).
 5. Borra todo lo que creó, aunque algo falle: logins, usuarios y su auditoría.
@@ -167,9 +169,9 @@ def flujo(cur):
 
         # ---- crear
         estado, r = funcion(token_admin, accion="crear", correo=CORREO_USUARIO, nombre="Prueba usuario",
-                            rol="LECTURA", mercados=[mco])
+                            rol="ZB", mercados=[mco])
         ok = estado == 200 and r.get("clave") and r["usuario"].get("auth_user_id")
-        anotar(bool(ok), f"Crea usuario LECTURA en MCO con login: {estado}")
+        anotar(bool(ok), f"Crea usuario Equipo ZB en MCO con login: {estado}")
         if not ok:
             anotar(False, f"Respuesta: {r}")
             return
@@ -191,7 +193,7 @@ def flujo(cur):
                               ("nueva_clave", dict(usuario_id=admin_id)),
                               ("desactivar", dict(usuario_id=admin_id))):
             estado, r = funcion(token_u, accion=accion, **extra)
-            anotar(estado == 403, f"No-ADMIN (LECTURA) intenta {accion}: {estado} (esperado 403)")
+            anotar(estado == 403, f"No-ADMIN (Equipo ZB) intenta {accion}: {estado} (esperado 403)")
         estado, r = http("POST", f"{URL}/rest/v1/rpc/fn_admin_crear_usuario",
                          {"p_correo": f"x5.{SUFIJO}@example.com", "p_nombre": "X", "p_rol": "ADMIN",
                           "p_proveedor_id": None, "p_mercados": []}, token=token_u)
@@ -226,7 +228,8 @@ def flujo(cur):
         estado, r = http("POST", f"{URL}/rest/v1/rpc/fn_clave_cambiada", {}, token=token_u)
         cur.execute("SELECT debe_cambiar_clave FROM usuarios WHERE id = %s", (usuario_id,))
         anotar(estado in (200, 204) and cur.fetchone()[0] is False, "fn_clave_cambiada apaga la marca")
-        anotar(bool(entrar(CORREO_USUARIO, clave3)[0]), "Entra con su contraseña nueva")
+        token_u, _, sesion_u = entrar(CORREO_USUARIO, clave3)
+        anotar(bool(token_u), "Entra con su contraseña nueva")
 
         # ---- auditoría con el ADMIN que lo hizo
         cur.execute("""SELECT campo, count(*) FROM auditoria
@@ -240,6 +243,77 @@ def flujo(cur):
                        WHERE tabla = 'usuarios' AND fila_id = %s AND campo = 'debe_cambiar_clave' AND usuario_id = %s""",
                     (usuario_id, usuario_id))
         anotar(cur.fetchone()[0] == 1, "Auditoría del cambio de contraseña con el propio usuario")
+
+        # ---- editar (sql/usuarios_edicion.sql)
+        editar(cur, token_admin, token_u, admin_id, usuario_id, mco, clave3, (sesion_u or {}).get("refresh_token"))
+
+
+def editar(cur, token_admin, token_u, admin_id, usuario_id, mco, clave_u, refresh_u):
+    """Acción editar: mercados, nombre y rol; reglas; cierre de sesiones; auditoría."""
+    cur.execute("SELECT id FROM mercados WHERE codigo = 'MLC'")
+    mlc = cur.fetchone()[0]
+
+    # Validaciones: 400, y un no-ADMIN 403.
+    casos = [
+        ("Equipo ZB sin mercados", dict(usuario_id=usuario_id, nombre="X", rol="ZB", mercados=[])),
+        ("Cliente sin mercados", dict(usuario_id=usuario_id, nombre="X", rol="CLIENTE")),
+        ("Proveedor sin proveedor", dict(usuario_id=usuario_id, nombre="X", rol="PROVEEDOR")),
+        ("nombre vacío", dict(usuario_id=usuario_id, nombre=" ", rol="ZB", mercados=[mco])),
+        ("el ADMIN se cambia su propio rol", dict(usuario_id=admin_id, nombre="Prueba ADMIN temporal", rol="LECTURA")),
+    ]
+    for nombre, cuerpo in casos:
+        estado, r = funcion(token_admin, accion="editar", **cuerpo)
+        anotar(estado == 400, f"editar rechaza {nombre}: {estado} — {(r or {}).get('error')}")
+    estado, _ = funcion(token_admin, accion="editar", nombre="X", rol="ZB", mercados=[mco])
+    anotar(estado == 400, f"editar sin usuario_id: {estado} (esperado 400)")
+    estado, _ = funcion(token_u, accion="editar", usuario_id=usuario_id, nombre="X", rol="ADMIN")
+    anotar(estado == 403, f"No-ADMIN intenta editar (subirse a ADMIN): {estado} (esperado 403)")
+    estado, _ = http("POST", f"{URL}/rest/v1/rpc/fn_admin_editar_usuario",
+                     {"p_usuario_id": usuario_id, "p_nombre": "X", "p_rol": "ADMIN",
+                      "p_proveedor_id": None, "p_mercados": []}, token=token_u)
+    anotar(estado in (401, 403), f"No-ADMIN llama directo a fn_admin_editar_usuario: {estado} (esperado 403)")
+
+    # Agregar MLC: cambia el acceso, cierra sus sesiones; el correo no se toca.
+    estado, r = funcion(token_admin, accion="editar", usuario_id=usuario_id, nombre="Prueba usuario",
+                        rol="ZB", mercados=[mco, mlc], correo="otro@example.com")
+    anotar(estado == 200 and r.get("acceso_cambio") is True and (r.get("sesiones_cerradas") or 0) >= 1,
+           f"editar: agrega MLC — {estado}, acceso_cambio {(r or {}).get('acceso_cambio')}, "
+           f"{(r or {}).get('sesiones_cerradas')} sesiones cerradas")
+    anotar(estado == 200 and r["usuario"]["correo"] == CORREO_USUARIO, "editar no cambia el correo aunque llegue")
+    cur.execute("SELECT array_agg(mercado_id ORDER BY mercado_id) FROM usuario_mercados WHERE usuario_id = %s", (usuario_id,))
+    anotar(cur.fetchone()[0] == sorted([mco, mlc]), "Queda con MCO y MLC")
+    if refresh_u:
+        estado, r = http("POST", f"{URL}/auth/v1/token?grant_type=refresh_token", {"refresh_token": refresh_u})
+        anotar(estado >= 400, f"Su sesión vieja ya no se renueva: {estado}")
+    else:
+        anotar(False, "No hubo refresh_token para probar el cierre de sesión")
+
+    # Solo el nombre: no cierra sesiones (la sesión nueva se sigue renovando).
+    _, _, sesion = entrar(CORREO_USUARIO, clave_u)
+    estado, r = funcion(token_admin, accion="editar", usuario_id=usuario_id, nombre="Prueba usuario editado",
+                        rol="ZB", mercados=[mco, mlc])
+    anotar(estado == 200 and r.get("acceso_cambio") is False and r.get("sesiones_cerradas") == 0,
+           f"editar solo el nombre: {estado}, sin cerrar sesiones ({(r or {}).get('sesiones_cerradas')})")
+    estado, _ = http("POST", f"{URL}/auth/v1/token?grant_type=refresh_token",
+                     {"refresh_token": (sesion or {}).get("refresh_token")})
+    anotar(estado == 200, f"Su sesión sigue renovándose: {estado}")
+
+    # A Lectura: ve todos, sin usuario_mercados.
+    estado, r = funcion(token_admin, accion="editar", usuario_id=usuario_id, nombre="Prueba usuario editado",
+                        rol="LECTURA", mercados=[mco])
+    cur.execute("SELECT count(*) FROM usuario_mercados WHERE usuario_id = %s", (usuario_id,))
+    anotar(estado == 200 and r["usuario"]["rol"] == "LECTURA" and r.get("mercados") == [] and cur.fetchone()[0] == 0,
+           f"editar a Lectura: {estado}, sin mercados guardados")
+
+    cur.execute("""SELECT campo, valor_anterior, valor_nuevo FROM auditoria
+                   WHERE tabla = 'usuarios' AND fila_id = %s AND usuario_id = %s
+                     AND campo IN ('mercados', 'nombre', 'rol', '(sesiones cerradas)') ORDER BY id""",
+                (usuario_id, admin_id))
+    filas = cur.fetchall()
+    esperado = [("mercados", None, "MCO"), ("mercados", "MCO", "MCO,MLC"), ("nombre", "Prueba usuario", "Prueba usuario editado"),
+                ("rol", "ZB", "LECTURA"), ("mercados", "MCO,MLC", None)]
+    anotar(all(e in filas for e in esperado) and any(f[0] == "(sesiones cerradas)" for f in filas),
+           f"Auditoría de editar con antes y después: {filas}")
 
 
 def main():
