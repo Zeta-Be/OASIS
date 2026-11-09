@@ -10,9 +10,10 @@ la pantalla Usuarios.
 1. Crea un ADMIN temporal directo en la base (fila en usuarios y login en Auth
    con una contraseña aleatoria que no se imprime).
 2. Con su sesión recorre el flujo: crear, validaciones, entrar con la temporal,
-   nueva contraseña, desactivar, reactivar, cambio de contraseña del usuario y
-   editar (mercados, nombre, rol; reglas; cierre de sesiones).
-   Necesita también sql/usuarios_edicion.sql aplicado.
+   nueva contraseña, desactivar, reactivar, cambio de contraseña del usuario,
+   editar (mercados, nombre, rol; reglas; cierre de sesiones) y borrar (solo
+   desactivados; fila, mercados y login fuera; auditoría marcada «(borrado)»).
+   Necesita también sql/usuarios_edicion.sql y sql/usuarios_borrar.sql aplicados.
 3. Comprueba que un no-ADMIN recibe 403 y que la auditoría registra al ADMIN.
 4. Busca la llave secreta en el repositorio (git grep, también en el historial).
 5. Borra todo lo que creó, aunque algo falle: logins, usuarios y su auditoría.
@@ -247,6 +248,9 @@ def flujo(cur):
         # ---- editar (sql/usuarios_edicion.sql)
         editar(cur, token_admin, token_u, admin_id, usuario_id, mco, clave3, (sesion_u or {}).get("refresh_token"))
 
+        # ---- borrar (sql/usuarios_borrar.sql)
+        borrar(cur, token_admin, admin_id, usuario_id, clave3)
+
 
 def editar(cur, token_admin, token_u, admin_id, usuario_id, mco, clave_u, refresh_u):
     """Acción editar: mercados, nombre y rol; reglas; cierre de sesiones; auditoría."""
@@ -314,6 +318,54 @@ def editar(cur, token_admin, token_u, admin_id, usuario_id, mco, clave_u, refres
                 ("rol", "ZB", "LECTURA"), ("mercados", "MCO,MLC", None)]
     anotar(all(e in filas for e in esperado) and any(f[0] == "(sesiones cerradas)" for f in filas),
            f"Auditoría de editar con antes y después: {filas}")
+
+
+def borrar(cur, token_admin, admin_id, usuario_id, clave_u):
+    """Acción borrar: solo desactivados; fila, mercados y login fuera; auditoría."""
+    # Un no-ADMIN no borra (el usuario quedó LECTURA activo tras editar).
+    token_u, _, _ = entrar(CORREO_USUARIO, clave_u)
+    estado, r = funcion(token_u, accion="borrar", usuario_id=admin_id)
+    anotar(estado == 403, f"No-ADMIN intenta borrar: {estado} (esperado 403)")
+
+    # Activo con login: primero desactivar. Y nadie se borra a sí mismo.
+    estado, r = funcion(token_admin, accion="borrar", usuario_id=usuario_id)
+    anotar(estado == 400 and "Desact" in ((r or {}).get("error") or ""),
+           f"borrar un activo: {estado} — {(r or {}).get('error')}")
+    estado, r = funcion(token_admin, accion="borrar", usuario_id=admin_id)
+    anotar(estado == 400, f"borrar(se) a sí mismo: {estado} — {(r or {}).get('error')}")
+
+    # Desactivado sí: fila, mercados y login fuera, sin advertencia.
+    estado, _ = funcion(token_admin, accion="desactivar", usuario_id=usuario_id)
+    anotar(estado == 200, f"Desactivar antes de borrar: {estado}")
+    estado, r = funcion(token_admin, accion="borrar", usuario_id=usuario_id)
+    anotar(estado == 200 and (r or {}).get("borrado") is True and not (r or {}).get("advertencia"),
+           f"borrar un desactivado: {estado}, sin advertencia")
+    cur.execute("SELECT count(*) FROM usuarios WHERE id = %s", (usuario_id,))
+    n_fila = cur.fetchone()[0]
+    cur.execute("SELECT count(*) FROM usuario_mercados WHERE usuario_id = %s", (usuario_id,))
+    n_merc = cur.fetchone()[0]
+    cur.execute("SELECT count(*) FROM auth.users WHERE email = %s", (CORREO_USUARIO,))
+    n_login = cur.fetchone()[0]
+    anotar(n_fila == 0 and n_merc == 0 and n_login == 0,
+           f"Fila ({n_fila}), mercados ({n_merc}) y login en Auth ({n_login}) ya no existen")
+    anotar(not entrar(CORREO_USUARIO, clave_u)[0], "Ya no puede entrar")
+
+    # Auditoría: la (baja) con el ADMIN; sus filas históricas marcadas «(borrado)».
+    cur.execute("""SELECT count(*) FROM auditoria
+                   WHERE tabla = 'usuarios' AND fila_id = %s AND campo = '(baja)' AND usuario_id = %s""",
+                (usuario_id, admin_id))
+    anotar(cur.fetchone()[0] == 1, "Auditoría: fila (baja) con el ADMIN")
+    cur.execute("""SELECT count(*) FROM auditoria
+                   WHERE fila_id = %s AND campo = 'debe_cambiar_clave' AND usuario_id IS NULL
+                     AND usuario_borrado LIKE %s""", (usuario_id, "%" + CORREO_USUARIO + " (borrado)"))
+    anotar(cur.fetchone()[0] == 1,
+           "Sus filas históricas quedan con usuario_id NULL y la marca «nombre · correo (borrado)»")
+    cur.execute("SELECT count(*) FROM auditoria WHERE usuario_id = %s AND usuario_borrado IS NOT NULL", (admin_id,))
+    anotar(cur.fetchone()[0] == 0, "Las filas de otros autores siguen sin marca")
+
+    # Repetir da 400: ya no existe.
+    estado, r = funcion(token_admin, accion="borrar", usuario_id=usuario_id)
+    anotar(estado == 400, f"borrar dos veces: {estado} — {(r or {}).get('error')}")
 
 
 def main():

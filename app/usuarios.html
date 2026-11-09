@@ -18,6 +18,10 @@
     <h1 class="titulo">Usuarios</h1>
 
     <div v-if="errorCarga" class="alerta error" style="margin-bottom:14px">{{ errorCarga }}</div>
+    <div v-if="avisoGlobal" class="alerta aviso aviso-global">
+      {{ avisoGlobal }}
+      <button type="button" class="mini" @click="avisoGlobal = ''">Cerrar</button>
+    </div>
 
     <section class="card">
       <div class="card-cab">
@@ -78,7 +82,16 @@
               </td>
               <td class="estado-col">
                 <div class="acciones-fila">
-                  <template v-if="confirmar && confirmar.id === u.id">
+                  <template v-if="borrarU && borrarU.id === u.id">
+                    <span class="pregunta">Escribe el correo exacto:</span>
+                    <input id="borrar-correo" v-model="borrarU.escrito" class="mono confirma-borrar"
+                           autocomplete="off" spellcheck="false" :placeholder="u.correo"
+                           @keydown.enter.prevent="borrarDefinitivo(u)">
+                    <button type="button" class="mini peligro" :disabled="u._ocupado || !coincideBorrar(u)"
+                            @click="borrarDefinitivo(u)">Borrar definitivamente</button>
+                    <button type="button" class="mini" :disabled="u._ocupado" @click="borrarU = null">Cancelar</button>
+                  </template>
+                  <template v-else-if="confirmar && confirmar.id === u.id">
                     <span class="pregunta">{{ confirmar.pregunta }}</span>
                     <button type="button" class="mini" :class="{ peligro: confirmar.accion === 'desactivar' }"
                             :disabled="u._ocupado" @click="ejecutar(u, confirmar.accion)">Sí</button>
@@ -92,8 +105,14 @@
                             @click="pedir(u, 'reactivar')">Reactivar</button>
                     <button type="button" class="mini" :disabled="u._ocupado"
                             @click="pedir(u, 'nueva_clave')">{{ u.auth_user_id ? 'Nueva contraseña' : 'Crear login' }}</button>
+                    <button v-if="!u.activo" type="button" class="mini peligro" :disabled="u._ocupado"
+                            @click="pedirBorrar(u)">Borrar</button>
                   </template>
                   <span v-if="u._ocupado" class="pill prop">…</span>
+                </div>
+                <div v-if="borrarU && borrarU.id === u.id" class="campo-error aviso-borrar">
+                  Borra su login y sus mercados; su rastro en la auditoría queda marcado como (borrado),
+                  con su nombre y correo. No se puede deshacer. Si solo quieres quitarle el acceso, con desactivarlo basta.
                 </div>
                 <div v-if="u._error" class="campo-error">{{ u._error }}</div>
                 <div v-else-if="u._aviso" class="aviso-fila">{{ u._aviso }}</div>

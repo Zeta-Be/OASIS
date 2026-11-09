@@ -152,6 +152,8 @@ BEGIN
     SELECT campana_id INTO n FROM compras WHERE id = v_compra;
     SELECT count(*) INTO n2 FROM v_alertas WHERE compra_id = v_compra AND alerta = 'campaña fuera del glosario';
     r := r || format('%s  taxonomía nueva que el glosario no tiene: sin campaña del glosario y con su alerta (%s)', CASE WHEN n IS NULL AND n2 = 1 THEN 'OK   ' ELSE 'FALLA' END, n2);
+    SELECT campana_grupo INTO g FROM v_materiales WHERE compra_id = v_compra LIMIT 1;
+    r := r || format('%s  sin glosario, campana_grupo usa el nombre corto de la taxonomía (%s)', CASE WHEN g = 'CAMPANA-NUEVA' THEN 'OK   ' ELSE 'FALLA' END, g);
     -- Mercado Pago (sql/mercado_pago.sql): la misma regla acepta la BU MP.
     t := fn_taxonomia_de_texto('MLC', 'MLC_MP_UF-AW_USUARIOS_CTAPRO_X  8');
     r := r || format('%s  taxonomía MP con texto al final: queda %s', CASE WHEN t = 'MLC_MP_UF-AW_USUARIOS_CTAPRO_X' THEN 'OK   ' ELSE 'FALLA' END, t);
@@ -162,6 +164,8 @@ BEGIN
     SELECT campana_grupo INTO g FROM v_materiales WHERE compra_id = v_compra LIMIT 1;
     r := r || format('%s  compra con parque fijo MP: la acepta (%s) y cuenta como %s',
                      CASE WHEN t = 'MLC_MP_OTH-PF_USUARIOS_PARQUE-FIJO_X' AND g = 'PARQUE FIJO' THEN 'OK   ' ELSE 'FALLA' END, t, g);
+    SELECT count(*) INTO n FROM v_alertas WHERE compra_id = v_compra AND alerta = 'campaña de otra BU';
+    r := r || format('%s  taxonomía MP con CLIENTE ML: sale la alerta «campaña de otra BU» (%s)', CASE WHEN n = 1 THEN 'OK   ' ELSE 'FALLA' END, n);
     UPDATE compras SET campana_taxonomia = NULL, campana_id = NULL WHERE id = v_compra;   -- como estaba, para lo que sigue
 
     -- ============================================================== 1. ZB de MLC

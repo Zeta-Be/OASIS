@@ -1,8 +1,17 @@
 // Dashboard para clientes: inversión OOH ejecutada por mercado y vista LATAM de
-// proveedores. Replica el dashboard original de OOH LATAM, pero los datos ya no
-// van dentro del archivo: se piden a la base después del login, con tres
-// funciones (fn_dashboard_portada, fn_dashboard_mercado, fn_dashboard_latam) que
-// solo devuelven los mercados del usuario.
+// proveedores. Replica el dashboard original de OOH LATAM (mismas visuales en
+// cada vista y pestaña), pero los datos ya no van dentro del archivo: se piden a
+// la base después del login, con tres funciones (fn_dashboard_portada,
+// fn_dashboard_mercado, fn_dashboard_latam) que solo devuelven los mercados del
+// usuario.
+//
+// Diferencias deliberadas con el original (aprobadas por Nicolás):
+// - Los KPIs del hero no suman monedas locales: van en USD a la tasa vigente,
+//   con la nota «USD a TRM del …» debajo (el original sumaba COP+CLP+…).
+// - Medio y Ciudad traen los valores reales (en el original venían rotos).
+// - La BU (Cliente ML/MP) sale de la columna CLIENTE del Flow.
+// - «Datos al …», el corte y las tasas vigentes se muestran, discretos.
+// - LATAM también descarga Excel.
 //
 // Las respuestas se guardan en memoria mientras la página está abierta (objeto
 // `cache`), nunca en localStorage, sessionStorage ni en la URL. localStorage
@@ -25,27 +34,26 @@ const AVISO_ADMIN = null;
 const CLAVE_IDIOMA = 'oasis.dashboard.idioma';
 const CLAVE_TEMA = 'oasis.dashboard.tema';
 
-// Banderas y colores por mercado: no son datos, solo presentación. La bandera que
-// manda la base tiene prioridad; esta es el respaldo.
+// Banderas por mercado: no son datos, solo presentación. La bandera que manda
+// la base tiene prioridad; esta es el respaldo.
 const BANDERAS = {
   MCO: '🇨🇴', MLB: '🇧🇷', MLM: '🇲🇽',
   MLA: '🇦🇷', MLC: '🇨🇱', MLU: '🇺🇾',
   MPE: '🇵🇪',
 };
-const COLOR_MERCADO = {
-  MLA: '#42A5F5', MLC: '#D32F2F', MCO: '#F9A825', MLM: '#2E7D32',
-  MLU: '#1565C0', MLB: '#00897B', MPE: '#8E24AA',
-};
-const ORDEN_MERCADOS = ['MLA', 'MLB', 'MLC', 'MCO', 'MLM', 'MPE', 'MLU'];
+// Paletas del original: CL para barras horizontales, TCCL para tipo de costo,
+// PCOL y PORD para los países de LATAM (un país nuevo toma un color de CL).
 const CL = ['#FDC62C', '#2563EB', '#C2410C', '#3F6B3F', '#9333EA', '#EA580C', '#0891B2', '#DB2777', '#65A30D', '#6366F1'];
 const TCCL = ['#E65100', '#00695C', '#4527A0', '#AD1457', '#0277BD', '#558B2F', '#6A1B9A', '#BF360C', '#1B5E20', '#4E342E'];
+const PCOL = { ARGENTINA: '#42A5F5', CHILE: '#D32F2F', COLOMBIA: '#F9A825', MEXICO: '#2E7D32', URUGUAY: '#1565C0' };
+const PORD = ['ARGENTINA', 'CHILE', 'COLOMBIA', 'MEXICO', 'URUGUAY'];
 
 // ------------------------------------------------------------------ Textos (ES / PT)
 
 const T = {
   es: {
     dashReg: 'Dashboard Regional', heroSub: 'Inversión OOH — Costo Ejecutado Acumulado por Mercado',
-    paises: 'Países', soportes: 'Soportes', anio: 'Año', selMerc: 'Selecciona un mercado',
+    paises: 'Países', anio: 'Año', selMerc: 'Selecciona un mercado',
     filtros: 'Filtros', limpiar: 'limpiar', todo: 'todo', limpiarAll: 'Limpiar filtros',
     fk: [['cli', 'Cliente'], ['m', 'Mes'], ['camp', 'Campaña'], ['sub', 'Subcampaña'], ['tc', 'Tipo de Costo'], ['prov', 'Proveedor'], ['fmt', 'Formato'], ['med', 'Medio'], ['city', 'Ciudad']],
     tabs: [['monthly', 'Inv. Mensual'], ['weekly', 'Inv. Semanal'], ['subcampana', 'Subcampañas'], ['costos', 'Tipo de Costos'], ['proveedores', 'Proveedores'], ['campanas', 'Campañas']],
@@ -58,26 +66,25 @@ const T = {
     mixProv: 'Mix de <em>Proveedores</em>', detProv: 'Detalle <em>Proveedores</em>',
     invCamp: 'Inversión por <em>Campaña</em>', campXMes: 'Campaña × <em>Mes</em>', campXTC: 'Campaña × <em>Tipo de Costo</em>', campana: 'Campaña',
     nombre: 'Nombre', costoEj: 'Costo Ejecutado', share: 'Share', mes: 'Mes', semana: 'Semana', total: 'Total', sub: 'Sub',
-    soportesL: 'soportes', pfLabel: 'OOH', campLabel: 'Campañas',
+    pfLabel: 'OOH', campLabel: 'Campañas',
     // Propios de OASIS
-    mercados: 'Mercados', mercadosBtn: 'Mercados', ultimaCarga: 'Última carga',
-    datosAl: 'Datos al', corte: 'Corte', moneda: 'Moneda', monedaLocal: 'Moneda local', pais: 'País', tipoCosto: 'Tipo de Costo', cliente: 'Cliente', proveedor: 'Proveedor',
+    datosAl: 'Datos al', corte: 'Corte', moneda: 'Moneda', monedaLocal: 'Moneda Local', pais: 'País', tipoCosto: 'Tipo de Costo', cliente: 'Cliente', proveedor: 'Proveedor',
     cargando: 'Cargando…', errCarga: 'No se pudo cargar la información', reintentar: 'Reintentar',
     sinAcceso: 'No tienes acceso a estos datos.', sesionVencida: 'Tu sesión venció. Vuelve a entrar.',
     salir: 'Cerrar sesión', temaClaro: 'Cambiar a tema claro', temaOscuro: 'Cambiar a tema oscuro',
     sinDatosAnio: 'No hay inversión ejecutada en {a} en tus mercados.', sinFilas: 'No hay datos con estos filtros.',
     activos: 'activos',
     latamCode: 'Consolidado — USD', latamSub: 'Visión para Compras',
-    provPais: 'Inversión por <em>Proveedor</em> — Share por País', detPais: 'Detalle por <em>País</em>',
-    provTC: 'Inversión por <em>Proveedor</em> — Share por Tipo de Costo', provMercado: '<em>Proveedores</em> en ',
-    tasa: 'USD a TRM {v} · vigente desde {d}', sinTasa: 'sin tasa de cambio: no entra en los totales en USD',
-    notaLocal: 'En moneda local cada mercado se muestra en su moneda; los totales entre mercados solo existen en USD.',
+    provPais: 'Inversión por <em>Proveedor</em> — Share por País', detPais: 'Detalle por País',
+    provTC: 'Inversión por <em>Proveedor</em> — Share por Tipo de Costo',
+    tasa: 'USD a TRM {v} · vigente desde {d}', notaTrm: 'USD a TRM del {d}',
+    sinTasa: 'sin tasa de cambio: no entra en los totales en USD',
     invLocal: 'Inversión (moneda local)',
     xls: ['Mes', 'Semana', 'Proveedor', 'Tipo de Costo', 'Formato', 'Campaña', 'Subcampaña', 'Costo Ejecutado', 'Cliente', 'Medio', 'Ciudad', 'Moneda'],
   },
   pt: {
     dashReg: 'Dashboard Regional', heroSub: 'Investimento OOH — Custo Executado Acumulado por Mercado',
-    paises: 'Países', soportes: 'Suportes', anio: 'Ano', selMerc: 'Selecione um mercado',
+    paises: 'Países', anio: 'Ano', selMerc: 'Selecione um mercado',
     filtros: 'Filtros', limpiar: 'limpar', todo: 'todos', limpiarAll: 'Limpar filtros',
     fk: [['cli', 'Unidade de Negócio'], ['m', 'Mês'], ['camp', 'Campanha'], ['sub', 'Subcampanha'], ['tc', 'Tipo de Custo'], ['prov', 'Fornecedor'], ['fmt', 'Formato'], ['med', 'Meio'], ['city', 'Cidade']],
     tabs: [['monthly', 'Inv. Mensal'], ['weekly', 'Inv. Semanal'], ['subcampana', 'Subcampanhas'], ['costos', 'Tipo de Custos'], ['proveedores', 'Fornecedores'], ['campanas', 'Campanhas']],
@@ -90,8 +97,7 @@ const T = {
     mixProv: 'Mix de <em>Fornecedores</em>', detProv: 'Detalhe <em>Fornecedores</em>',
     invCamp: 'Investimento por <em>Campanha</em>', campXMes: 'Campanha × <em>Mês</em>', campXTC: 'Campanha × <em>Tipo de Custo</em>', campana: 'Campanha',
     nombre: 'Nome', costoEj: 'Custo Executado', share: 'Share', mes: 'Mês', semana: 'Semana', total: 'Total', sub: 'Sub',
-    soportesL: 'suportes', pfLabel: 'OOH', campLabel: 'Campanhas',
-    mercados: 'Mercados', mercadosBtn: 'Mercados', ultimaCarga: 'Última carga',
+    pfLabel: 'OOH', campLabel: 'Campanhas',
     datosAl: 'Dados de', corte: 'Corte', moneda: 'Moeda', monedaLocal: 'Moeda Local', pais: 'País', tipoCosto: 'Tipo de Custo', cliente: 'Unidade de Negócio', proveedor: 'Fornecedor',
     cargando: 'Carregando…', errCarga: 'Não foi possível carregar as informações', reintentar: 'Tentar de novo',
     sinAcceso: 'Você não tem acesso a estes dados.', sesionVencida: 'Sua sessão expirou. Entre novamente.',
@@ -99,10 +105,10 @@ const T = {
     sinDatosAnio: 'Não há investimento executado em {a} nos seus mercados.', sinFilas: 'Não há dados com estes filtros.',
     activos: 'ativos',
     latamCode: 'Consolidado — USD', latamSub: 'Visão para Compras',
-    provPais: 'Investimento por <em>Fornecedor</em> — Share por País', detPais: 'Detalhe por <em>País</em>',
-    provTC: 'Investimento por <em>Fornecedor</em> — Share por Tipo de Custo', provMercado: '<em>Fornecedores</em> em ',
-    tasa: 'USD a TRM {v} · vigente desde {d}', sinTasa: 'sem taxa de câmbio: não entra nos totais em USD',
-    notaLocal: 'Em moeda local cada mercado aparece na sua moeda; totais entre mercados só existem em USD.',
+    provPais: 'Investimento por <em>Fornecedor</em> — Share por País', detPais: 'Detalhe por País',
+    provTC: 'Investimento por <em>Fornecedor</em> — Share por Tipo de Custo',
+    tasa: 'USD a TRM {v} · vigente desde {d}', notaTrm: 'USD a TRM de {d}',
+    sinTasa: 'sem taxa de câmbio: não entra nos totais em USD',
     invLocal: 'Investimento (moeda local)',
     xls: ['Mês', 'Semana', 'Fornecedor', 'Tipo de Custo', 'Formato', 'Campanha', 'Subcampanha', 'Custo Executado', 'Unidade de Negócio', 'Meio', 'Cidade', 'Moeda'],
   },
@@ -268,7 +274,7 @@ async function mostrar(v, empujar = true) {
 function pintarBarra() {
   const enPortada = vista.tipo === 'portada';
   $$('bbw').classList.toggle('hidden', enPortada);
-  $$('btnVolver').textContent = '◀ ' + t('mercadosBtn');
+  $$('btnVolver').textContent = '◀ LATAM';   // como el original: volver a la portada
   $$('salirBtn').textContent = t('salir');
   $$('lES').classList.toggle('on', lang === 'es');
   $$('lPT').classList.toggle('on', lang === 'pt');
@@ -330,11 +336,31 @@ function pintarPortada(d) {
   $$('heroSub').textContent = t('heroSub');
   $$('selTitle').textContent = t('selMerc');
 
-  // No se suman montos entre mercados: cada uno está en su moneda.
+  // Mismas celdas que el original (Países, OOH, Campañas, Año), pero los montos
+  // regionales van en USD a la tasa vigente: nunca se suman monedas locales.
+  const tasaDe = {};
+  for (const x of ((d && d.tasas) || [])) tasaDe[x.mercado] = x;
+  let usdPf = 0, usdCi = 0, vigente = '', conTasa = 0;
+  const sinTasa = [];
+  for (const m of mercados) {
+    const ta = tasaDe[m.codigo], v = ta && Number(ta.valor_por_usd);
+    if (!(v > 0)) { sinTasa.push(m); continue; }
+    usdPf += Number(m.pf || 0) / v;
+    usdCi += Number(m.ci || 0) / v;
+    if (String(ta.vigente_desde || '') > vigente) vigente = String(ta.vigente_desde);
+    conTasa++;
+  }
   $$('hkpis').innerHTML =
-    `<div><div class="k">${esc(t('mercados'))}</div><div class="v">${mercados.length}</div></div>` +
-    `<div><div class="k">${esc(t('anio'))}</div><div class="v">${esc((d && d.anio) || anio)}</div></div>` +
-    `<div><div class="k">${esc(t('ultimaCarga'))}</div><div class="v chico">${esc(fechaHora(d && d.ultima_carga))}</div></div>`;
+    `<div><div class="k">${esc(t('paises'))}</div><div class="v">${mercados.length}</div></div>` +
+    `<div><div class="k">${esc(t('pfLabel'))}</div><div class="v" style="font-size:16px">${conTasa ? esc(fusd(usdPf)) : '—'}</div></div>` +
+    `<div><div class="k">${esc(t('campLabel'))}</div><div class="v" style="font-size:16px">${conTasa ? esc(fusd(usdCi)) : '—'}</div></div>` +
+    `<div><div class="k">${esc(t('anio'))}</div><div class="v">${esc((d && d.anio) || anio)}</div></div>`;
+
+  // Nota discreta: fecha de los datos y tasa usada; mercados sin tasa, avisados.
+  let nota = `<span>${esc(t('datosAl'))} ${esc(fechaHora(d && d.ultima_carga))}` +
+    (conTasa && vigente ? ` · ${esc(t('notaTrm').replace('{d}', fecha(vigente)))}` : '') + '</span>';
+  for (const m of sinTasa) nota += `<span class="falta">${esc(bandera(m.codigo, m.bandera))} ${esc(m.codigo)}: ${esc(t('sinTasa'))}</span>`;
+  $$('notaHome').innerHTML = nota;
   $$('avisoHome').innerHTML = avisoAdmin();
 
   const g = $$('cgrid');
@@ -354,7 +380,6 @@ function pintarPortada(d) {
       `<div class="cinv">${esc(fc(m.t, m.moneda))}</div>` +
       `<div class="cpf"><span class="lbl">${esc(t('pfLabel'))}</span><span class="val">${esc(fc(m.pf, m.moneda))}</span></div>` +
       (Number(m.ci) ? `<div class="ccmp"><span class="lbl">${esc(t('campLabel'))}</span><span class="val">${esc(fc(m.ci, m.moneda))}</span></div>` : '') +
-      `<div class="csop">${esc(fn(m.sp))} ${esc(t('soportesL'))} · ${esc(t('corte'))} ${esc(fecha(m.corte))}</div>` +
       `<div class="carrow">▶</div>`;
     el.addEventListener('click', () => mostrar({ tipo: 'mercado', codigo: m.codigo }));
     g.appendChild(el);
@@ -424,7 +449,8 @@ function bldF(rows, fks, alCambiar, opciones = {}) {
       if (k === 'm' || k === 'mes') { if (v > 0) uv.add(v); } else if (v != null && String(v).trim()) uv.add(v);
     }
     const esMes = k === 'm' || k === 'mes';
-    const vals = esMes ? [...uv].map(Number).sort((a, b) => a - b) : [...uv].sort((a, b) => String(a).localeCompare(String(b), 'es'));
+    // Orden ASCII plano, como el original (la ñ y los símbolos van al final).
+    const vals = esMes ? [...uv].map(Number).sort((a, b) => a - b) : [...uv].sort();
     if (vals.length < 2 && !esMes && k !== 'cli') continue;
 
     const gr = document.createElement('div');
@@ -458,7 +484,7 @@ function bldF(rows, fks, alCambiar, opciones = {}) {
         sF(); alCambiar();
       });
       lb.appendChild(cb);
-      const etiqueta = esMes ? mn[v] : (opciones.etiqueta ? opciones.etiqueta(k, v) : v);
+      const etiqueta = esMes ? mn[v] : v;
       lb.appendChild(document.createTextNode(' ' + etiqueta));
       opts.appendChild(lb);
     }
@@ -482,11 +508,11 @@ function sF() {
   $$('fToggle').innerHTML = `<span>${esc(t('filtros'))}${n ? ` · ${n} ${esc(t('activos'))}` : ''}</span><span aria-hidden="true">${$$('side').classList.contains('abierto') ? '▴' : '▾'}</span>`;
 }
 
-function pasaFiltros(r, mapa = {}) {
+function pasaFiltros(r) {
   for (const fk of Object.keys(af)) {
     const vs = af[fk];
     if (!vs) continue;
-    if (!vs[String(r[mapa[fk] || fk])]) return false;
+    if (!vs[String(r[fk])]) return false;
   }
   return true;
 }
@@ -548,9 +574,9 @@ function ren(recs) {
     bar(b, el, t(semanal ? 'invSemanal' : 'invMensual'), etq, semanal, cur);
     const ks = Object.keys(b).map(Number).sort((a, c) => a - c);
     const tot = ks.reduce((s, k) => s + b[k], 0);
-    let s = `<h4>${t(semanal ? 'detSemanal' : 'detMensual')} <em>(${esc(cur)})</em></h4><div class="tscroll"><table class="dt"><thead><tr><th>${esc(t(semanal ? 'semana' : 'mes'))}</th><th class="num">${esc(t('costoEj'))}</th><th class="num">${esc(t('share'))}</th></tr></thead><tbody>`;
+    let s = `<h4>${t(semanal ? 'detSemanal' : 'detMensual')}</h4><div class="tscroll"><table class="dt"><thead><tr><th>${esc(t(semanal ? 'semana' : 'mes'))}</th><th class="num">${esc(t('costoEj'))}</th><th class="num">${esc(t('share'))}</th></tr></thead><tbody>`;
     for (const k of ks) s += `<tr><td>${esc(etq(k))}</td><td class="num">${fn(Math.round(b[k]))}</td><td class="num">${fp(tot > 0 ? b[k] / tot * 100 : 0)}</td></tr>`;
-    s += `<tr class="tot"><td>${esc(t('total'))}</td><td class="num">${esc(cur)} ${fn(Math.round(tot))}</td><td class="num">100.0%</td></tr></tbody></table></div>`;
+    s += `<tr class="tot"><td>${esc(t('total'))}</td><td class="num">${fn(Math.round(tot))}</td><td class="num">100.0%</td></tr></tbody></table></div>`;
     panel(el, s);
   } else if (cs === 'subcampana') {
     const bs = sumarPor(recs, 'sub');
@@ -583,30 +609,29 @@ function bar(data, el, titulo, lblFn, azul, cur) {
   let mx = 0;
   for (const k of ks) if (data[k] > mx) mx = data[k];
   if (mx <= 0) mx = 1;
-  const w = panel(el, `<h4>${titulo} <em>(${esc(cur)})</em></h4>`);
+  const w = panel(el, `<h4>${titulo}</h4>`);
   const ch = document.createElement('div');
   ch.className = 'bchart' + (azul ? ' wchart' : '');
   for (const k of ks) {
     const v = data[k], pct = (Math.max(v, 0) / mx * 80) + 5;
     const c = document.createElement('div');
     c.className = 'bcol';
-    c.title = `${lblFn(k)}: ${cur} ${fn(Math.round(v))}`;
-    c.innerHTML = `<div class="bval">${esc(fc(v, ''))}</div><div class="bbar${azul ? ' blue' : ''}" style="height:${pct}%"></div><div class="blbl">${esc(lblFn(k))}</div>`;
+    c.innerHTML = `<div class="bval">${esc(fc(v, cur))}</div><div class="bbar${azul ? ' blue' : ''}" style="height:${pct}%"></div><div class="blbl">${esc(lblFn(k))}</div>`;
     ch.appendChild(c);
   }
-  // Siempre dentro de un contenedor con scroll propio: en el celular las barras
-  // no caben y la página no debe correrse de lado.
-  const sw = document.createElement('div'); sw.className = 'scroll-wrap';
-  const si = document.createElement('div'); si.className = 'scroll-inner';
-  si.appendChild(ch);
+  // Como el original: con más de 12 barras (la semanal) van en una franja con
+  // scroll propio y flechas; con 12 o menos, las barras se reparten el ancho.
   if (ks.length > 12) {
+    const sw = document.createElement('div'); sw.className = 'scroll-wrap';
+    const si = document.createElement('div'); si.className = 'scroll-inner';
+    si.appendChild(ch);
     const al = document.createElement('button'); al.type = 'button'; al.className = 'sarrow left'; al.innerHTML = '&#9664;';
     al.addEventListener('click', () => { si.scrollLeft -= 300; });
     const ar = document.createElement('button'); ar.type = 'button'; ar.className = 'sarrow right'; ar.innerHTML = '&#9654;';
     ar.addEventListener('click', () => { si.scrollLeft += 300; });
     sw.appendChild(al); sw.appendChild(si); sw.appendChild(ar);
-  } else sw.appendChild(si);
-  w.appendChild(sw);
+    w.appendChild(sw);
+  } else w.appendChild(ch);
 }
 
 function ordenarDesc(obj) { return Object.entries(obj).sort((a, b) => b[1] - a[1]); }
@@ -617,9 +642,9 @@ function hbar(el, titulo, obj, cur) {
   let tot = 0, mx = 0;
   for (const [, v] of arr) { tot += v; if (v > mx) mx = v; }
   if (mx <= 0) mx = 1;
-  let s = `<h4>${titulo} <em>(${esc(cur)})</em></h4><div class="hbars">`;
+  let s = `<h4>${titulo}</h4><div class="hbars">`;
   arr.forEach(([k, v], i) => {
-    const pct = Math.max(v, 0) / mx * 100, sh = tot > 0 ? v / tot * 100 : 0, valTxt = esc(fc(v, cur)), dentro = pct > 35;
+    const pct = Math.max(v, 0) / mx * 100, sh = tot > 0 ? v / tot * 100 : 0, valTxt = esc(fc(v, cur)), dentro = pct > 25;
     s += `<div class="hbar-row"><div class="hbar-name" title="${esc(k)}">${esc(k)}</div><div class="hbar-track">` +
       `<div class="hbar-fill" style="width:${pct}%;background:${CL[i % CL.length]}">${dentro ? valTxt : ''}</div>` +
       (dentro ? '' : `<span class="hbar-out" style="left:${pct + 1}%">${valTxt}</span>`) +
@@ -631,12 +656,12 @@ function hbar(el, titulo, obj, cur) {
 function tbl(el, titulo, obj, cur) {
   const arr = ordenarDesc(obj);
   const tot = arr.reduce((s, [, v]) => s + v, 0);
-  let s = `<h4>${titulo} <em>(${esc(cur)})</em></h4><div class="tscroll"><table class="dt"><thead><tr><th>${esc(t('nombre'))}</th><th class="num">${esc(t('inv'))}</th><th class="num">${esc(t('share'))}</th><th style="width:80px"></th></tr></thead><tbody>`;
+  let s = `<h4>${titulo}</h4><div class="tscroll"><table class="dt"><thead><tr><th>${esc(t('nombre'))}</th><th class="num">${esc(t('inv'))}</th><th class="num">${esc(t('share'))}</th><th style="width:80px"></th></tr></thead><tbody>`;
   for (const [k, v] of arr) {
     const sh = tot > 0 ? v / tot * 100 : 0;
     s += `<tr><td>${esc(k)}</td><td class="num">${esc(fc(v, cur))}</td><td class="num">${fp(sh)}</td><td><div class="sbar"><div class="sfill" style="width:${Math.max(sh, 0)}%"></div></div></td></tr>`;
   }
-  s += `<tr class="tot"><td>${esc(t('total'))}</td><td class="num">${esc(cur)} ${fn(Math.round(tot))}</td><td class="num">100.0%</td><td></td></tr></tbody></table></div>`;
+  s += `<tr class="tot"><td>${esc(t('total'))}</td><td class="num">${fn(Math.round(tot))}</td><td class="num">100.0%</td><td></td></tr></tbody></table></div>`;
   panel(el, s);
 }
 
@@ -649,12 +674,12 @@ function xtab(el, titulo, recs, fila, col, colLbl, cur, conShare, cabFila) {
     m[f][c] = (m[f][c] || 0) + r.cost;
     cols.add(c);
   }
-  const cks = col === 'm' ? [...cols].sort((a, b) => a - b) : [...cols].sort((a, b) => String(a).localeCompare(String(b), 'es'));
-  const fks = Object.keys(m).sort((a, b) => a.localeCompare(b, 'es'));
+  const cks = col === 'm' ? [...cols].sort((a, b) => a - b) : [...cols].sort();
+  const fks = Object.keys(m).sort();
   const totFila = {};
   let gt = 0;
   for (const f of fks) { totFila[f] = cks.reduce((s, c) => s + (m[f][c] || 0), 0); gt += totFila[f]; }
-  let s = `<h4>${titulo} <em>(${esc(cur)})</em></h4><div class="tscroll"><table class="dt"><thead><tr><th>${esc(cabFila)}</th>`;
+  let s = `<h4>${titulo}</h4><div class="tscroll"><table class="dt"><thead><tr><th>${esc(cabFila)}</th>`;
   for (const c of cks) s += `<th class="num">${esc(colLbl(c))}</th>`;
   s += `<th class="num">${esc(t('total'))}</th>${conShare ? `<th class="num">${esc(t('share'))}</th>` : ''}</tr></thead><tbody>`;
   const totCol = {};
@@ -669,11 +694,15 @@ function xtab(el, titulo, recs, fila, col, colLbl, cur, conShare, cabFila) {
   }
   s += `<tr class="tot"><td>${esc(t('total'))}</td>`;
   for (const c of cks) s += `<td class="num">${fn(Math.round(totCol[c] || 0))}</td>`;
-  s += `<td class="num">${esc(cur)} ${fn(Math.round(gt))}</td>${conShare ? '<td class="num">100.0%</td>' : ''}</tr></tbody></table></div>`;
+  s += `<td class="num">${fn(Math.round(gt))}</td>${conShare ? '<td class="num">100.0%</td>' : ''}</tr></tbody></table></div>`;
   panel(el, s);
 }
 
 // ------------------------------------------------------------------ LATAM
+// Las tres secciones son las mismas en moneda local y en USD, como en el
+// original: las barras apiladas y los totales por proveedor van SIEMPRE en USD
+// (la escala común); en moneda local solo cambian las celdas por país de la
+// tabla, cada una en su moneda. Nunca se suman monedas locales entre países.
 
 function prepararLatam(d) {
   d.rows = ((d && d.filas) || []).map((f) => ({
@@ -689,23 +718,24 @@ function prepararLatam(d) {
   }));
   d.tasaDe = {};
   for (const x of (d.tasas || [])) d.tasaDe[x.mercado] = x;
+  // Bandera y moneda de cada país, sacadas de sus propias filas.
+  d.flagDe = {}; d.monedaDe = {};
+  for (const r of d.rows) {
+    if (!d.flagDe[r.pais]) d.flagDe[r.pais] = bandera(r.mercado);
+    if (!d.monedaDe[r.pais]) d.monedaDe[r.pais] = r.moneda;
+  }
   return d;
 }
 
-function nombreMercado(codigo) {
-  const r = actual.rows.find((x) => x.mercado === codigo);
-  return r ? r.pais : codigo;
-}
-function etiquetaMercado(codigo) { return `${bandera(codigo)} ${nombreMercado(codigo)}`; }
-function ordenMercados(cods) {
-  return [...cods].sort((a, b) => {
-    const ia = ORDEN_MERCADOS.indexOf(a), ib = ORDEN_MERCADOS.indexOf(b);
-    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
-  });
+function flagPais(p) { return (actual.flagDe && actual.flagDe[p]) ? actual.flagDe[p] + ' ' : ''; }
+
+// Países en el orden fijo del original; uno nuevo va al final, alfabético.
+function ordenPaises(set) {
+  return [...PORD.filter((p) => set.has(p)), ...[...set].filter((p) => !PORD.includes(p)).sort()];
 }
 
 const FILTROS_LATAM = () => [
-  ['mercado', t('pais')], ['cli', t('cliente')], ['mes', t('mes')], ['prov', t('proveedor')], ['tc', t('tipoCosto')],
+  ['pais', t('pais')], ['cli', t('cliente')], ['mes', t('mes')], ['prov', t('proveedor')],
 ];
 
 function pintarLatam(d, reiniciar) {
@@ -719,7 +749,7 @@ function pintarLatam(d, reiniciar) {
   $$('clrAllBtn').textContent = t('limpiarAll');
   $$('clrAllBtn').onclick = () => { af = {}; sF(); updL(); };
 
-  // Moneda local / USD
+  // Moneda Local / USD
   const cg = document.createElement('div');
   cg.className = 'fgrp';
   cg.innerHTML = `<div class="fl">${esc(t('moneda'))}</div>`;
@@ -741,10 +771,7 @@ function pintarLatam(d, reiniciar) {
   }
   cg.appendChild(opts);
 
-  bldF(d.rows, FILTROS_LATAM(), updL, {
-    antes: cg,
-    etiqueta: (k, v) => (k === 'mercado' ? etiquetaMercado(v) : v),
-  });
+  bldF(d.rows, FILTROS_LATAM(), updL, { antes: cg });
   updL();
 }
 
@@ -752,20 +779,21 @@ function gfrL() { return actual.rows.filter((r) => pasaFiltros(r)); }
 
 function updL() {
   const recs = gfrL();
-  const provs = new Set(), mercados = new Set();
-  for (const r of recs) { if (!vacioTxt(r.prov)) provs.add(r.prov); mercados.add(r.mercado); }
-  const merc = ordenMercados(mercados);
+  const provs = new Set(), paises = new Set();
+  for (const r of recs) { if (!vacioTxt(r.prov)) provs.add(r.prov); paises.add(r.pais); }
   const nota = $$('nota');
 
   if (lusd) {
-    // En USD sí se suma entre mercados: para eso está la conversión.
+    // En USD sí se suma entre países: para eso está la conversión.
     const ti = recs.reduce((s, r) => s + (r.usd || 0), 0);
     $$('kpis').innerHTML =
       `<div class="mkpi hl"><div class="kl">USD ${esc(t('total'))}</div><div class="kv">${esc(fusd(ti))}</div></div>` +
       `<div class="mkpi"><div class="kl">${esc(t('provs'))}</div><div class="kv">${provs.size}</div></div>` +
-      `<div class="mkpi"><div class="kl">${esc(t('paises'))}</div><div class="kv">${merc.length}</div></div>`;
+      `<div class="mkpi"><div class="kl">${esc(t('paises'))}</div><div class="kv">${paises.size}</div></div>`;
+    // Nota discreta: la tasa vigente de cada mercado y los que no tienen.
+    const mercs = [...new Set(recs.map((r) => r.mercado))].sort();
     let n = '';
-    for (const m of merc) {
+    for (const m of mercs) {
       const tasa = actual.tasaDe[m];
       const sinUsd = recs.some((r) => r.mercado === m && r.usd == null);
       if (tasa) {
@@ -777,123 +805,98 @@ function updL() {
     nota.innerHTML = n;
     nota.classList.toggle('hidden', !n);
   } else {
-    // Moneda local: un total por mercado, nunca uno general.
+    // Moneda local: un KPI por país, cada uno en su moneda; nunca un total.
     let kh = '';
-    merc.forEach((m, i) => {
-      const tot = recs.reduce((s, r) => s + (r.mercado === m ? r.inv : 0), 0);
-      const mon = (recs.find((r) => r.mercado === m) || {}).moneda;
-      kh += `<div class="mkpi${i === 0 ? ' hl' : ''}"><div class="kl">${esc(etiquetaMercado(m))}</div><div class="kv">${esc(fc(tot, mon))}</div></div>`;
+    [...paises].sort().forEach((p, i) => {
+      const tot = recs.reduce((s, r) => s + (r.pais === p ? r.inv : 0), 0);
+      kh += `<div class="mkpi${i === 0 ? ' hl' : ''}"><div class="kl">${esc(flagPais(p) + p)}</div><div class="kv">${esc(fc(tot, actual.monedaDe[p]))}</div></div>`;
     });
     kh += `<div class="mkpi"><div class="kl">${esc(t('provs'))}</div><div class="kv">${provs.size}</div></div>`;
     $$('kpis').innerHTML = kh;
-    nota.innerHTML = `<span>${esc(t('notaLocal'))}</span>`;
-    nota.classList.remove('hidden');
+    nota.innerHTML = '';
+    nota.classList.add('hidden');
   }
-  renL(recs, merc);
+  renL(recs);
 }
 
-function renL(recs, merc) {
+function renL(recs) {
   const el = $$('out');
   el.innerHTML = '';
   if (!recs.length) { el.innerHTML = `<div class="vacio">${esc(t('sinFilas'))}</div>`; return; }
-  const tcs = [...new Set(recs.map((r) => r.tc))].sort((a, b) => a.localeCompare(b, 'es'));
-  const colorTc = {};
-  tcs.forEach((tc, i) => { colorTc[tc] = TCCL[i % TCCL.length]; });
 
-  if (lusd) {
-    const conUsd = recs.filter((r) => r.usd != null);
-    const porProv = agruparProv(conUsd, 'usd');
-    apilado(el, t('provPais'), porProv, merc, COLOR_MERCADO, etiquetaMercado, 'mercado', fusd);
-    tablaPais(el, recs, merc);
-    apilado(el, t('provTC'), porProv, tcs, colorTc, (x) => x, 'tc', fusd);
-  } else {
-    tablaPais(el, recs, merc);
-    // Un panel por mercado, en su moneda.
-    for (const m of merc) {
-      const deM = recs.filter((r) => r.mercado === m);
-      const mon = (deM[0] || {}).moneda;
-      apilado(el, `${t('provMercado')}${esc(etiquetaMercado(m))} <em>(${esc(mon)})</em>`, agruparProv(deM, 'inv'), tcs, colorTc, (x) => x, 'tc', (v) => fc(v, mon));
-    }
-  }
-}
-
-// { prov: { total, mercado: {..}, tc: {..} } } ordenado de mayor a menor.
-function agruparProv(recs, campo) {
-  const o = {};
+  // Agregado por proveedor. Las barras y los totales van en USD (una fila sin
+  // tasa cuenta 0 en USD y se avisa en la nota); lo local vive en byPLC.
+  const byProv = {};
   for (const r of recs) {
-    const v = r[campo] || 0;
-    if (!o[r.prov]) o[r.prov] = { total: 0, mercado: {}, tc: {} };
-    const p = o[r.prov];
-    p.total += v;
-    p.mercado[r.mercado] = (p.mercado[r.mercado] || 0) + v;
-    p.tc[r.tc] = (p.tc[r.tc] || 0) + v;
+    if (!byProv[r.prov]) byProv[r.prov] = { usd: 0, byP: {}, byPLC: {}, byTC: {} };
+    const d = byProv[r.prov], u = r.usd || 0;
+    d.usd += u;
+    d.byP[r.pais] = (d.byP[r.pais] || 0) + u;
+    d.byPLC[r.pais] = (d.byPLC[r.pais] || 0) + r.inv;
+    d.byTC[r.tc] = (d.byTC[r.tc] || 0) + u;
   }
-  return Object.entries(o).sort((a, b) => b[1].total - a[1].total);
+  const pa = Object.entries(byProv).sort((a, b) => b[1].usd - a[1].usd);
+  const mx = pa.length && pa[0][1].usd > 0 ? pa[0][1].usd : 1;
+  const gt = pa.reduce((s, [, d]) => s + d.usd, 0);
+
+  const paisSet = new Set(recs.map((r) => r.pais)), tcSet = new Set(recs.map((r) => r.tc));
+  const paises = ordenPaises(paisSet);
+  const tcs = [...tcSet].sort();
+  const pcol = {}; paises.forEach((p, i) => { pcol[p] = PCOL[p] || CL[i % CL.length]; });
+  const tcol = {}; tcs.forEach((tc, i) => { tcol[tc] = TCCL[i % TCCL.length]; });
+
+  apilada(el, t('provPais'), pa, mx, paises, pcol, (p) => flagPais(p) + p, 'byP');
+  tablaPais(el, pa, gt, paises);
+  apilada(el, t('provTC'), pa, mx, tcs, tcol, (x) => x, 'byTC');
 }
 
-// Barras horizontales apiladas: cada proveedor partido por `dim` (mercado o tipo de costo).
-function apilado(el, tituloHtml, porProv, segs, colores, etiqueta, dim, fmt) {
-  const mx = porProv.length ? Math.max(porProv[0][1].total, 0) || 1 : 1;
-  const presentes = segs.filter((sg) => porProv.some(([, d]) => (d[dim][sg] || 0) > 0));
-  let s = `<h4>${tituloHtml}</h4><div class="leyenda">`;
-  for (const sg of presentes) s += `<span><i style="background:${colores[sg] || '#888'}"></i>${esc(etiqueta(sg))}</span>`;
-  s += '</div><div class="hbars ancho">';
-  for (const [pn, d] of porProv) {
-    const barW = Math.max(d.total, 0) / mx * 100;
+// Barras apiladas por proveedor: cada barra se parte por `dim` (país o tipo de
+// costo), con el share adentro o superpuesto cuando el segmento es muy angosto.
+function apilada(el, titulo, pa, mx, segs, colores, etiqueta, dim) {
+  let s = `<h4>${titulo}</h4><div class="leyenda">`;
+  for (const sg of segs) s += `<span><i style="background:${colores[sg]}"></i>${esc(etiqueta(sg))}</span>`;
+  s += '</div><div class="hbars">';
+  for (const [pn, d] of pa) {
+    const barW = Math.max(d.usd, 0) / mx * 100;
     const fuera = [];
     let acum = 0;
     s += `<div class="hbar-row"><div class="hbar-name" title="${esc(pn)}">${esc(pn)}</div><div class="hbar-track libre"><div class="pila" style="width:${barW}%">`;
-    for (const sg of presentes) {
+    for (const sg of segs) {
       const v = d[dim][sg] || 0;
       if (v <= 0) continue;
-      const sp = d.total > 0 ? v / d.total * 100 : 0;
-      const ttl = esc(`${etiqueta(sg)}: ${fmt(v)} (${fp(sp)})`);
-      const bg = colores[sg] || '#888';
-      if (barW * sp / 100 > 12) s += `<div class="seg" style="flex:0 0 ${sp}%;background:${bg}" title="${ttl}">${fp(sp)}</div>`;
-      else { s += `<div class="seg" style="flex:0 0 ${sp}%;background:${bg}" title="${ttl}"></div>`; fuera.push({ l: barW * (acum + sp / 2) / 100, v: fp(sp) }); }
+      const sp = d.usd > 0 ? v / d.usd * 100 : 0;
+      const ttl = esc(`${etiqueta(sg)}: ${fusd(v)} (${fp(sp)})`);
+      if (barW * sp / 100 > 12) s += `<div class="seg" style="flex:0 0 ${sp}%;background:${colores[sg]}" title="${ttl}">${fp(sp)}</div>`;
+      else { s += `<div class="seg" style="flex:0 0 ${sp}%;background:${colores[sg]}" title="${ttl}"></div>`; fuera.push({ l: barW * (acum + sp / 2) / 100, v: fp(sp) }); }
       acum += sp;
     }
     s += '</div>';
     for (const f of fuera) s += `<span class="seg-out" style="left:${f.l}%">${f.v}</span>`;
-    s += `</div><div class="hbar-pct">${esc(fmt(d.total))}</div></div>`;
+    s += `</div><div class="hbar-pct" style="font-size:10.5px">${esc(fusd(d.usd))}</div></div>`;
   }
   panel(el, s + '</div>');
 }
 
-// Proveedor × país. En USD lleva total y share; en moneda local cada columna
-// está en su moneda y no hay total entre columnas.
-function tablaPais(el, recs, merc) {
-  const o = {};
-  for (const r of recs) {
-    if (!o[r.prov]) o[r.prov] = { usd: 0, inv: {}, usdM: {} };
-    o[r.prov].usd += r.usd || 0;
-    o[r.prov].inv[r.mercado] = (o[r.prov].inv[r.mercado] || 0) + r.inv;
-    if (r.usd != null) o[r.prov].usdM[r.mercado] = (o[r.prov].usdM[r.mercado] || 0) + r.usd;
-  }
-  const moneda = {};
-  for (const r of recs) moneda[r.mercado] = r.moneda;
-  const filas = Object.entries(o).sort(lusd ? (a, b) => b[1].usd - a[1].usd : (a, b) => a[0].localeCompare(b[0], 'es'));
-  const gt = filas.reduce((s, [, d]) => s + d.usd, 0);
-
-  let s = `<h4>${t('detPais')}${lusd ? ' <em>(USD)</em>' : ''}</h4><div class="tscroll"><table class="dt"><thead><tr><th>${esc(t('proveedor'))}</th>`;
-  for (const m of merc) s += `<th class="num">${esc(etiquetaMercado(m))}${lusd ? '' : ` (${esc(moneda[m])})`}</th>`;
-  if (lusd) s += `<th class="num">TOTAL USD</th><th class="num">${esc(t('share'))}</th>`;
-  s += '</tr></thead><tbody>';
+// Tabla Proveedor × País. En USD las celdas van en USD; en moneda local cada
+// columna va en la moneda de su país. El total por proveedor y el share van
+// siempre en USD, como en el original: nunca se suman monedas locales.
+function tablaPais(el, pa, gt, paises) {
+  let s = `<h4>${esc(t('detPais'))}</h4><div class="tscroll"><table class="dt"><thead><tr><th>${esc(t('proveedor'))}</th>`;
+  for (const p of paises) s += `<th class="num">${esc(flagPais(p) + p)}</th>`;
+  s += `<th class="num" style="font-weight:700">TOTAL USD</th><th class="num">${esc(t('share'))}</th></tr></thead><tbody>`;
   const totCol = {};
-  for (const [pn, d] of filas) {
+  for (const [pn, d] of pa) {
     s += `<tr><td style="font-weight:600">${esc(pn)}</td>`;
-    for (const m of merc) {
-      const v = lusd ? (d.usdM[m] || 0) : (d.inv[m] || 0);
-      totCol[m] = (totCol[m] || 0) + v;
-      s += `<td class="num">${v ? esc(lusd ? fusd(v) : fc(v, moneda[m])) : '—'}</td>`;
+    for (const p of paises) {
+      const v = lusd ? (d.byP[p] || 0) : (d.byPLC[p] || 0);
+      totCol[p] = (totCol[p] || 0) + v;
+      s += `<td class="num">${v > 0 ? esc(lusd ? fusd(v) : fc(v, actual.monedaDe[p])) : '—'}</td>`;
     }
-    if (lusd) s += `<td class="num" style="font-weight:700">${esc(fusd(d.usd))}</td><td class="num">${fp(gt > 0 ? d.usd / gt * 100 : 0)}</td>`;
-    s += '</tr>';
+    s += `<td class="num" style="font-weight:700">${esc(fusd(d.usd))}</td><td class="num">${fp(gt > 0 ? d.usd / gt * 100 : 0)}</td></tr>`;
   }
   s += `<tr class="tot"><td>TOTAL</td>`;
-  for (const m of merc) s += `<td class="num">${esc(lusd ? fusd(totCol[m] || 0) : fc(totCol[m] || 0, moneda[m]))}</td>`;
-  if (lusd) s += `<td class="num">${esc(fusd(gt))}</td><td class="num">100.0%</td>`;
-  s += '</tr></tbody></table></div>';
+  for (const p of paises) s += `<td class="num">${esc(lusd ? fusd(totCol[p] || 0) : fc(totCol[p] || 0, actual.monedaDe[p]))}</td>`;
+  s += `<td class="num">${esc(fusd(gt))}</td><td class="num">100.0%</td></tr></tbody></table></div>`;
   panel(el, s);
 }
 
