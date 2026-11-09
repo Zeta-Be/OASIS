@@ -37,7 +37,7 @@ El objetivo del sistema es saber cuánta plata corresponde a cada material, día
 | BigQuery para BI | `mbw-spl-brazil.ds_meli_oasis.inversion_diaria`: copia de `v_inversion_diaria` que llena `exportar_bq.py` después de cada carga. Ver «BigQuery» en Contrato con BI |
 | Corrida diaria | Job de Cloud Run `oasis-diario` (us-central1, `mbw-spl-brazil`), todos los días a las 6:00 hora Colombia por Cloud Scheduler: `diario.sh` carga los cinco mercados y exporta a BigQuery. Se despliega con `desplegar_diario.sh` (`Dockerfile`, `.gcloudignore`). Ver «Corrida diaria» |
 | Código | GitHub `Zeta-Be/OASIS` (https://github.com/Zeta-Be/OASIS) |
-| Fuente de captura actual | Un Google Sheets por mercado, con los IDs en `mercados.json` (MCO `1yiMiERvkTzePyw2FlsQGwPRMSdq9YO2Gxv4ICPbp-zY`, el archivo «_VF» desde el 04-11-2026). Los equipos siguen llenando ahí hasta el corte. Cada Sheets se comparte como Lector con `oasis-lector@mbw-spl-brazil.iam.gserviceaccount.com` |
+| Fuente de captura actual | Un Google Sheets por mercado, con los IDs en `mercados.json` (MCO `13Vh45CymNMntNG-EW3NQnglnfyvq39nT7nvediDTV1g`, «OASIS_FLOW_TRACKING_MCO_MERCADOLIBRE». Ojo: existe una copia «…_VF» (`1yiMiERv…`) que **no** es la fuente; OASIS la cargó por error del 04-11 al 10-11-2026 y MCO quedó congelado con datos del 27-10. Antes de cambiar un ID aquí, confirmar con el equipo del mercado cuál archivo están llenando). Los equipos siguen llenando ahí hasta el corte. Cada Sheets se comparte como Lector con `oasis-lector@mbw-spl-brazil.iam.gserviceaccount.com` |
 
 ## Modelo de datos
 
