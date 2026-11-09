@@ -56,9 +56,9 @@
           <div class="kpi-et">Compras</div>
           <div class="kpi-val mono">{{ fmtEntero(visibles.length) }}</div>
         </div>
-        <div class="kpi">
-          <div class="kpi-et">Valor total</div>
-          <div class="kpi-val mono">{{ fmtNumero(sumaVisible) }}</div>
+        <div v-for="s in sumasPorMoneda" :key="s.moneda" class="kpi">
+          <div class="kpi-et">Valor total · {{ s.moneda }}</div>
+          <div class="kpi-val mono">{{ fmtNumero(s.suma) }}</div>
         </div>
       </div>
 
@@ -75,7 +75,7 @@
             <tr>
               <th class="pegada c0 calc">Código</th>
               <th class="pegada c1">Cliente</th>
-              <th class="calc">Campaña</th>
+              <th :class="{ calc: soloLectura }">Campaña</th>
               <th>Tipo compra</th>
               <th>Proveedor</th>
               <th>Medio</th>
@@ -107,12 +107,17 @@
                 <span v-if="soloLectura" class="txt">{{ r.cliente }}</span>
                 <input v-else v-model.trim="r.cliente" list="dl-clientes" class="ancho-s">
               </td>
-              <td class="calc" :class="claseErr(r, 'campana_id')" :title="msgErr(r, 'campana_id') || 'La fija el mercado'">{{ nombreCampana(r) }}</td>
+              <td class="campana-col" :class="claseErr(r, 'campana_id')" :title="msgErr(r, 'campana_id') || r.campana_taxonomia || r.campana_texto || ''">
+                <span v-if="soloLectura" class="txt corto">{{ nombreCampana(r) }}</span>
+                <selector-campana v-else compacto :model-value="valorCampana(r)" :opciones="opcionesCampana(r.mercado_id)"
+                                  :mercado="codigoMercado(r.mercado_id)"
+                                  @update:model-value="v => cambiarCampana(r, v)" @nueva="t => agregarCampana(r.mercado_id, t)"></selector-campana>
+              </td>
               <td :class="claseErr(r, 'tipo_compra')" :title="msgErr(r, 'tipo_compra')">
                 <span v-if="soloLectura" class="txt">{{ r.tipo_compra }}</span>
                 <select v-else v-model="r.tipo_compra">
                   <option :value="null"></option>
-                  <option v-for="t in ENUMS.tipo_compra" :key="t" :value="t">{{ t }}</option>
+                  <option v-for="t in catalogos.tiposCompra" :key="t" :value="t">{{ t }}</option>
                 </select>
               </td>
               <td :class="claseErr(r, 'proveedor_id')" :title="msgErr(r, 'proveedor_id')">
@@ -133,7 +138,7 @@
                 <span v-if="soloLectura" class="txt">{{ r.tipo_costo }}</span>
                 <select v-else v-model="r.tipo_costo" @change="recalcular(r, 'total')">
                   <option :value="null"></option>
-                  <option v-for="t in ENUMS.tipo_costo" :key="t" :value="t">{{ t }}</option>
+                  <option v-for="t in tiposCostoDe(r)" :key="t" :value="t">{{ t }}</option>
                 </select>
               </td>
               <td :class="[claseErr(r, 'formato'), { nuevo: avisoFormato(r) }]"
@@ -210,11 +215,12 @@
             </tr>
           </tbody>
           <tfoot>
-            <tr>
-              <td class="pegada c0">Total</td>
+            <!-- Una fila por moneda: con «Todos» no se suman mercados -->
+            <tr v-for="s in sumasPorMoneda" :key="s.moneda">
+              <td class="pegada c0">Total {{ s.moneda }}</td>
               <td class="pegada c1"></td>
               <td colspan="14"></td>
-              <td class="mono num destacado">{{ fmtNumero(sumaVisible) }}</td>
+              <td class="mono num destacado">{{ fmtNumero(s.suma) }}</td>
               <td colspan="3"></td>
             </tr>
           </tfoot>
@@ -244,16 +250,18 @@
               <input id="p-cliente" v-model.trim="borrador.cliente" list="dl-clientes" @blur="tocar('cliente')">
               <div class="campo-error" v-if="errPanel('cliente')">{{ errPanel('cliente') }}</div>
             </div>
-            <div class="campo ancho-2 calc" :class="{ err: errPanel('campana_id') }">
-              <label>Campaña</label>
-              <input :value="nombreCampana(borrador)" disabled title="La fija el mercado">
+            <div class="campo ancho-2" :class="{ err: errPanel('campana_id') }">
+              <label for="p-campana">Campaña</label>
+              <selector-campana id="p-campana" :model-value="valorCampana(borrador)" :opciones="opcionesCampana(borrador.mercado_id)"
+                                :mercado="codigoMercado(borrador.mercado_id)"
+                                @update:model-value="v => cambiarCampana(borrador, v)" @nueva="t => agregarCampana(borrador.mercado_id, t)"></selector-campana>
               <div class="campo-error" v-if="errPanel('campana_id')">{{ errPanel('campana_id') }}</div>
             </div>
             <div class="campo" :class="{ err: errPanel('tipo_compra') }">
               <label for="p-tipo-compra">Tipo de compra</label>
               <select id="p-tipo-compra" v-model="borrador.tipo_compra" @blur="tocar('tipo_compra')">
                 <option :value="null"></option>
-                <option v-for="t in ENUMS.tipo_compra" :key="t" :value="t">{{ t }}</option>
+                <option v-for="t in catalogos.tiposCompra" :key="t" :value="t">{{ t }}</option>
               </select>
               <div class="campo-error" v-if="errPanel('tipo_compra')">{{ errPanel('tipo_compra') }}</div>
             </div>
@@ -277,7 +285,7 @@
               <label for="p-tipo-costo">Tipo de costo</label>
               <select id="p-tipo-costo" v-model="borrador.tipo_costo" @change="recalcular(borrador, 'total')" @blur="tocar('tipo_costo')">
                 <option :value="null"></option>
-                <option v-for="t in ENUMS.tipo_costo" :key="t" :value="t">{{ t }}</option>
+                <option v-for="t in tiposCostoDe(borrador)" :key="t" :value="t">{{ t }}</option>
               </select>
               <div class="campo-error" v-if="errPanel('tipo_costo')">{{ errPanel('tipo_costo') }}</div>
             </div>

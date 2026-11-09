@@ -25,46 +25,47 @@ const COLUMNAS_INV = {
   costo_proyectado:  ['Costo proyectado', 'pesos'],
   estado:            ['Estado', 'txt'],
   costo_ejecutado:   ['Costo ejecutado', 'pesos'],
+  costo_en_mes:      ['Costo en el mes', 'pesos'],   // Total con filtro de mes (no es de la vista)
   mes_compra:        ['Mes de compra', 'mes'],
+  moneda:            ['Moneda', 'cod'],
 };
 
 // Columnas en el orden de cada vista. `orden` es único por fila: la paginación
 // de la API necesita un orden estable para no repetir ni saltar filas.
-// Se leen por `fn`, que devuelve la vista tal cual con un plan que no se cae
-// por RLS (sql/fase2_inversion.sql); leída directo, la vista pasa los 8 s.
+// Total y Semanal se traen completas para el mercado elegido (pocas filas) por
+// `fn` (sql/fase2_inversion.sql). La Diaria no: tiene decenas de miles de
+// filas por mercado, así que se pide de a una página, ya filtrada en la base
+// (fn_inversion_filtrada, sql/inversion_precalculada.sql). KPIs y gráficos
+// salen de fn_inversion_resumen, que devuelve agregados, no filas.
 const PESTANAS = {
   total: {
     titulo: 'Total', vista: 'v_inversion_total', fn: 'fn_inversion_total',
     columnas: ['site', 'bu', 'proveedor', 'tipo_costo', 'formato', 'valor_total', 'id', 'id_ejecucion',
       'campana', 'sub_campana', 'fecha_inicio', 'fecha_fin', 'dias', 'pct_participacion',
-      'costo_proyectado', 'costo_ejecutado', 'mes_compra'],
+      'costo_proyectado', 'costo_ejecutado', 'mes_compra', 'moneda'],
     orden: ['site', 'id_ejecucion'],
   },
   semanal: {
     titulo: 'Semanal', vista: 'v_inversion_semanal', fn: 'fn_inversion_semanal',
     columnas: ['site', 'bu', 'year', 'month', 'week', 'proveedor', 'tipo_costo', 'formato', 'valor_total',
       'id', 'id_ejecucion', 'campana', 'sub_campana', 'fecha_inicio', 'fecha_fin', 'dias',
-      'costo_proyectado', 'costo_ejecutado', 'mes_compra'],
+      'costo_proyectado', 'costo_ejecutado', 'mes_compra', 'moneda'],
     orden: ['site', 'id_ejecucion', 'year', 'month', 'week'],
   },
   diaria: {
-    titulo: 'Diaria', vista: 'v_inversion_diaria', fn: 'fn_inversion_diaria',
+    titulo: 'Diaria', vista: 'v_inversion_diaria', fn: 'fn_inversion_filtrada', enServidor: true,
     columnas: ['site', 'bu', 'year', 'month', 'week', 'date', 'proveedor', 'tipo_costo', 'formato',
       'valor_total', 'id', 'id_ejecucion', 'campana', 'sub_campana', 'pct_participacion',
-      'costo_proyectado', 'estado', 'costo_ejecutado', 'mes_compra'],
+      'costo_proyectado', 'estado', 'costo_ejecutado', 'mes_compra', 'moneda'],
     orden: ['site', 'id_ejecucion', 'date'],
   },
 };
 
-const POR_PAGINA = 200;
+const POR_PAGINA = 200;            // Total y Semanal, paginadas en el navegador
+const POR_PAGINA_DIARIA = 500;     // Diaria, paginada en la base
+const LOTE_CSV = 1000;             // filas por pedido al exportar la Diaria
 const TOP_GRAFICO = 8;          // barras por gráfico; el resto va a "Otros"
 
-// Montos cortos para las etiquetas de los gráficos: "$ 632 M" (millones), "$ 85 mil".
-function pesosCortos(x) {
-  const m = x / 1e6;
-  if (Math.abs(m) >= 1) return `$ ${m.toLocaleString('es-CO', { maximumFractionDigits: Math.abs(m) < 100 ? 1 : 0 })} M`;
-  return `$ ${Math.round(x / 1e3).toLocaleString('es-CO')} mil`;
-}
 const SIN_SUB_INV = '__sin__';  // opción "Sin sub campaña" del filtro
 const pad2 = (n) => String(n).padStart(2, '0');
 
@@ -92,6 +93,10 @@ function semanalPorCompra(filas) {
   return Object.freeze([...g.values()]);
 }
 
+// Un mercado a la vez, siempre: cada cifra va en su moneda y nunca se suman
+// mercados (pesos colombianos y chilenos no se suman). Por eso no hay «Todos»
+// y la pantalla pide a la base solo el mercado elegido.
+
 // Como traerTodo, pero pide las páginas en paralelo: la diaria pasa de 10.000 filas.
 async function traerTodoParalelo(consulta) {
   const { count, error } = await consulta({ count: 'exact', head: true });
@@ -117,18 +122,23 @@ async function iniciar() {
       mercados: [],
       misMercadoIds: [],
       // Por pestaña: filas (congeladas: Vue no las vuelve reactivas), cargando, error.
+      // En la Diaria, `filas` es solo la página actual y `cuantas` el total filtrado.
       datos: {
         total:   { filas: [], cargando: true, error: '' },
         semanal: { filas: [], cargando: true, error: '' },
-        diaria:  { filas: [], cargando: true, error: '' },
+        diaria:  { filas: [], cargando: true, error: '', cuantas: 0 },
       },
+      // Agregados de fn_inversion_resumen: KPIs, gráficos y opciones de los filtros.
+      resumen: { datos: null, cargando: true, error: '' },
+      exportando: null,                          // { hechas, total } mientras baja la Diaria
+      catalogoCosto: [],                         // tipos_costo, con sus mercados
       pestana: 'total',
       VER_POR,
       // Siempre arranca en mes de ejecución, la lectura principal; no se recuerda la
       // elección. Mes de compra es para conciliar con el Flow o la facturación.
       verPor: 'ejecucion',                      // 'ejecucion' | 'compra'
       pagina: 0,
-      filtros: { mercado: '', meses: [], proveedores: [], tiposCosto: [], subCampanas: [] },
+      filtros: { mercado: '', meses: [], proveedores: [], tiposCosto: [], subCampanas: [], campanas: [] },
       corte: { valor: null, cargado: false },   // configuracion.fecha_corte; null = hoy
       editorCorte: null,                        // { fecha, paso, nuevo, guardando, error }
       verTablasGraficos: false,                 // los gráficos como tabla (mismos datos)
@@ -140,12 +150,15 @@ async function iniciar() {
       misMercados() { return this.mercados.filter(m => this.misMercadoIds.includes(m.id)); },
       mercadosPorId() { return new Map(this.mercados.map(m => [m.id, m])); },
       codigoFiltro() { const m = this.mercadosPorId.get(this.filtros.mercado); return m ? m.codigo : ''; },
+      moneda() { const m = this.mercadosPorId.get(this.filtros.mercado); return m ? m.moneda : ''; },
+      formatoMoneda() { return fmtMoneda(this.moneda); },
 
       eyebrow() {
         const m = this.mercadosPorId.get(this.filtros.mercado);
-        return m ? `${m.codigo} · ${m.nombre}` : 'Todos mis mercados';
+        return m ? `${m.codigo} · ${m.nombre} · cifras en ${m.moneda}` : '';
       },
 
+      enServidor() { return !!PESTANAS[this.pestana].enServidor; },
       actual() {
         const d = this.datos[this.pestana];
         if (this.pestana === 'semanal' && this.verPor === 'compra') return { ...d, filas: this.semanalCompra };
@@ -155,48 +168,56 @@ async function iniciar() {
       // Semanal por mes de compra ya no se parte por mes de ejecución: sin columna Mes.
       columnas() {
         const c = PESTANAS[this.pestana].columnas;
-        return this.pestana === 'semanal' && this.verPor === 'compra' ? c.filter(x => x !== 'month') : c;
+        if (this.pestana === 'semanal' && this.verPor === 'compra') return c.filter(x => x !== 'month');
+        // Total con filtro de mes: el material entero (Costo proyectado) y, al
+        // lado, lo que suma dentro de los meses filtrados (Costo en el mes).
+        if (this.conCostoEnMes) {
+          const i = c.indexOf('costo_proyectado') + 1;
+          return [...c.slice(0, i), 'costo_en_mes', ...c.slice(i)];
+        }
+        return c;
       },
+      conCostoEnMes() { return this.pestana === 'total' && this.filtros.meses.length > 0; },
+      // De fn_inversion_resumen, con los mismos filtros que los KPIs: por eso cuadran.
+      costosEnMes() { return (this.resumen.datos && this.resumen.datos.por_material) || {}; },
       claveMes() { return this.verPor === 'compra' ? mesCompra : mesEjecucion; },
 
-      // ---- filtros: opciones sacadas de la vista total (tiene todos los materiales fechados)
-      filasDelMercado() {
-        const k = this.codigoFiltro;
-        return k ? this.datos.total.filas.filter(f => f.site === k) : this.datos.total.filas;
-      },
+      // ---- filtros: opciones del mercado completo, de fn_inversion_resumen
+      opcionesDe() { return (this.resumen.datos && this.resumen.datos.opciones) || {}; },
       opcionesMes() {
-        const s = new Set();
-        const k = this.codigoFiltro;
-        for (const f of this.datos.semanal.filas) if (!k || f.site === k) s.add(this.claveMes(f));
-        s.delete('');
-        return [...s].sort().map(m => {
+        return [...(this.opcionesDe.meses || [])].sort().map(m => {
           const [y, mm] = m.split('-');
           return { valor: m, etiqueta: `${MESES[Number(mm) - 1]} ${y}` };
         });
       },
-      opcionesProveedor() { return this.unicos('proveedor'); },
-      opcionesTipoCosto() { return ENUMS.tipo_costo.map(t => ({ valor: t, etiqueta: t })); },
+      opcionesProveedor() { return this.lista(this.opcionesDe.proveedores); },
+      opcionesTipoCosto() { return tiposCostoPara(this.catalogoCosto, this.codigoFiltro).map(t => ({ valor: t, etiqueta: t })); },
       opcionesSubCampana() {
-        return [{ valor: SIN_SUB_INV, etiqueta: 'Sin sub campaña' }, ...this.unicos('sub_campana')];
+        return [{ valor: SIN_SUB_INV, etiqueta: 'Sin sub campaña' }, ...this.lista(this.opcionesDe.sub_campanas)];
+      },
+      // Campaña de la compra; las de parque fijo (OTH-PF: PARQUE-FIJO, ALTO-IMPACTO,
+      // PLANTA-FIJA…) son una sola opción, «PARQUE FIJO».
+      opcionesCampana() { return this.lista(this.opcionesDe.campanas); },
+
+      // Los filtros como los entiende la base (fn_inversion_filtrada y _resumen).
+      filtrosServidor() {
+        const f = this.filtros;
+        return {
+          ver_por: this.verPor, meses: f.meses, proveedores: f.proveedores, tipos_costo: f.tiposCosto,
+          sub_campanas: f.subCampanas, campanas: f.campanas,
+        };
       },
 
-      filtradas() { return this.filtrar(this.actual.filas, this.pestana === 'total'); },
+      // Total y Semanal se filtran aquí; la Diaria ya viene filtrada de la base.
+      filtradas() { return this.enServidor ? this.actual.filas : this.filtrar(this.actual.filas, this.pestana === 'total'); },
 
-      // Gráficos: siempre desde la diaria filtrada, que reparte por día y por eso
-      // da el mes exacto, esté en la pestaña que esté la tabla.
+      // Gráficos: de los agregados de la base, por día y por eso con el mes exacto,
+      // esté en la pestaña que esté la tabla.
       graficos() {
-        const filas = this.filtrar(this.datos.diaria.filas, false);
-        const agrupar = (clave, etiqueta) => {
-          const m = new Map();
-          for (const r of filas) {
-            const k = clave(r);
-            let g = m.get(k);
-            if (!g) m.set(k, g = { clave: k, etiqueta: etiqueta(k), proy: 0, ejec: 0 });
-            g.proy += Number(r.costo_proyectado) || 0;
-            g.ejec += Number(r.costo_ejecutado) || 0;
-          }
-          return [...m.values()];
-        };
+        const r = this.resumen.datos;
+        const agrupar = (lista, etiqueta) => (lista || []).map(g => ({
+          clave: g.clave, etiqueta: etiqueta(g.clave), proy: Number(g.proyectado) || 0, ejec: Number(g.ejecutado) || 0,
+        }));
         const principales = (lista) => {
           lista.sort((a, b) => b.proy - a.proy);
           if (lista.length <= TOP_GRAFICO + 1) return lista;
@@ -206,7 +227,7 @@ async function iniciar() {
             proy: resto.reduce((x, g) => x + g.proy, 0), ejec: resto.reduce((x, g) => x + g.ejec, 0),
           }];
         };
-        const meses = agrupar(this.claveMes, k => k).filter(g => g.clave).sort((a, b) => a.clave.localeCompare(b.clave));
+        const meses = agrupar(r && r.periodos, k => k).filter(g => g.clave).sort((a, b) => a.clave.localeCompare(b.clave));
         meses.forEach((g, i) => {
           const [y, m] = g.clave.split('-');
           g.mes = MESES[Number(m) - 1];
@@ -226,31 +247,49 @@ async function iniciar() {
           return lista;
         };
         return {
-          vacio: !filas.length,
+          vacio: !r || !r.filas,
           meses: conEscala(meses),
-          subs: conEscala(principales(agrupar(r => r.sub_campana || '', k => k || 'Sin sub campaña'))),
-          provs: conEscala(principales(agrupar(r => r.proveedor || '', k => k || 'Sin proveedor'))),
+          subs: conEscala(principales(agrupar(r && r.sub_campanas, k => k || 'Sin sub campaña'))),
+          provs: conEscala(principales(agrupar(r && r.proveedores, k => k || 'Sin proveedor'))),
         };
       },
 
-      // Sobre todo lo filtrado, no sobre la página.
+      // Las cifras de arriba: de la base, por día (el mes exacto aunque la tabla
+      // sea Total). Con filtro de mes en Total, la tabla lista el material entero.
+      kpis() {
+        const t = (this.resumen.datos && this.resumen.datos.total) || {};
+        const proyectado = Number(t.proyectado) || 0, ejecutado = Number(t.ejecutado) || 0;
+        return { proyectado, ejecutado, porEjecutar: proyectado - ejecutado };
+      },
+      filasTotal() { return this.enServidor ? this.datos.diaria.cuantas : this.filtradas.length; },
+
+      // Fila de total de la tabla: la Diaria suma todo lo filtrado (no la página),
+      // igual que los KPIs; Total y Semanal suman lo que listan.
+      // En Total con filtro de mes, el total va bajo «Costo en el mes» (cuadra con
+      // los KPIs); los del material entero quedan en blanco para no confundir.
       sumas() {
-        let proyectado = 0, ejecutado = 0;
+        if (this.enServidor) return this.kpis;
+        let proyectado = 0, ejecutado = 0, enMes = 0;
         for (const r of this.filtradas) {
           proyectado += Number(r.costo_proyectado) || 0;
           ejecutado += Number(r.costo_ejecutado) || 0;
+          if (this.conCostoEnMes) enMes += this.costoEnMes(r);
         }
-        return { proyectado, ejecutado, porEjecutar: proyectado - ejecutado };
+        return { proyectado, ejecutado, porEjecutar: proyectado - ejecutado, enMes };
       },
 
-      paginas() { return Math.max(1, Math.ceil(this.filtradas.length / POR_PAGINA)); },
+      porPagina() { return this.enServidor ? POR_PAGINA_DIARIA : POR_PAGINA; },
+      paginas() { return Math.max(1, Math.ceil(this.filasTotal / this.porPagina)); },
       pagina_() { return Math.min(this.pagina, this.paginas - 1); },
-      enPagina() { return this.filtradas.slice(this.pagina_ * POR_PAGINA, (this.pagina_ + 1) * POR_PAGINA); },
+      enPagina() {
+        if (this.enServidor) return this.filtradas;
+        return this.filtradas.slice(this.pagina_ * POR_PAGINA, (this.pagina_ + 1) * POR_PAGINA);
+      },
       rango() {
-        const n = this.filtradas.length;
+        const n = this.filasTotal;
         if (!n) return '0 filas';
-        const desde = this.pagina_ * POR_PAGINA + 1;
-        return `Filas ${fmt.format(desde)}–${fmt.format(Math.min(n, desde + POR_PAGINA - 1))} de ${fmt.format(n)}`;
+        const desde = this.pagina_ * this.porPagina + 1;
+        return `Filas ${fmt.format(desde)}–${fmt.format(Math.min(n, desde + this.porPagina - 1))} de ${fmt.format(n)}`;
       },
 
       // Columnas antes del primer monto sumado: ahí va la palabra "Total".
@@ -260,21 +299,21 @@ async function iniciar() {
     },
 
     watch: {
-      'filtros.mercado'(id) {
+      // Otro mercado: los filtros se vacían (sus valores son de otro mercado) y se
+      // vuelve a pedir todo.
+      'filtros.mercado'(id, antes) {
         guardarMercadoActivo(id ? this.mercadosPorId.get(id).codigo : '');
-        const validos = new Set(this.opcionesProveedor.map(o => o.valor));
-        this.filtros.proveedores = this.filtros.proveedores.filter(v => validos.has(v));
-        const subs = new Set(this.opcionesSubCampana.map(o => o.valor));
-        this.filtros.subCampanas = this.filtros.subCampanas.filter(v => subs.has(v));
-        const meses = new Set(this.opcionesMes.map(o => o.valor));
-        this.filtros.meses = this.filtros.meses.filter(v => meses.has(v));
+        if (!id || id === antes) return;
+        Object.assign(this.filtros, { meses: [], proveedores: [], tiposCosto: [], subCampanas: [], campanas: [] });
+        this.cargarVistas();
       },
-      filtros: { deep: true, handler() { this.pagina = 0; } },
-      pestana() { this.pagina = 0; },
+      filtros: { deep: true, handler() { this.pagina = 0; this.pedirFiltrado(); } },
+      pestana() { this.pagina = 0; if (this.enServidor) this.cargarDiaria(); },
+      pagina() { if (this.enServidor) this.cargarDiaria(); },
       verPor() {
         this.pagina = 0;
-        const meses = new Set(this.opcionesMes.map(o => o.valor));
-        this.filtros.meses = this.filtros.meses.filter(v => meses.has(v));
+        this.filtros.meses = [];   // los meses de una lectura no son los de la otra
+        this.pedirFiltrado();
       },
     },
 
@@ -285,12 +324,14 @@ async function iniciar() {
         const prov = new Set(f.proveedores);
         const tipos = new Set(f.tiposCosto);
         const subs = new Set(f.subCampanas);
+        const camps = new Set(f.campanas);
         const meses = f.meses;
         return filas.filter(r => {
           if (k && r.site !== k) return false;
           if (prov.size && !prov.has(r.proveedor)) return false;
           if (tipos.size && !tipos.has(r.tipo_costo)) return false;
           if (subs.size && !subs.has(r.sub_campana || SIN_SUB_INV)) return false;
+          if (camps.size && !camps.has(r.campana_grupo)) return false;
           if (meses.length) {
             // Por mes de compra el filtro es exacto en todas las pestañas: cada fila
             // tiene un solo mes de compra. Por mes de ejecución, Total no tiene mes:
@@ -305,27 +346,27 @@ async function iniciar() {
         });
       },
 
-      unicos(campo) {
-        const s = new Set();
-        for (const f of this.filasDelMercado) if (f[campo]) s.add(f[campo]);
-        return [...s].sort((a, b) => a.localeCompare(b, 'es')).map(v => ({ valor: v, etiqueta: v }));
+      lista(valores) {
+        return [...(valores || [])].sort((a, b) => a.localeCompare(b, 'es')).map(v => ({ valor: v, etiqueta: v }));
       },
 
       tipo(col) { return COLUMNAS_INV[col][1]; },
       esNum(col) { return ['ent', 'pesos', 'pct', 'fecha', 'mes', 'cod'].includes(this.tipo(col)); },
+      costoEnMes(r) { return Number(this.costosEnMes[r.id_ejecucion]) || 0; },
+      valor(r, col) { return col === 'costo_en_mes' ? this.costoEnMes(r) : r[col]; },
       celda(r, col) {
-        const v = r[col];
+        const v = this.valor(r, col);
         if (v === null || v === undefined) return '';
         switch (this.tipo(col)) {
-          case 'pesos': return fmtPesos.format(Number(v));
+          case 'pesos': return this.formatoMoneda.format(Number(v));
           case 'pct':   return (Number(v) * 100).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' %';
           case 'fecha': { const [y, m, d] = v.split('-'); return `${d}/${m}/${y}`; }
           case 'mes':   { const [y, m] = v.split('-'); return `${MESES[Number(m) - 1]} ${y}`; }
           default:      return v;
         }
       },
-      pesos(x) { return fmtPesos.format(x); },
-      pesosCortos,
+      pesos(x) { return this.formatoMoneda.format(x); },
+      pesosCortos(x) { return montoCorto(x); },
       pct(x) { return x.toLocaleString('es-CO', { maximumFractionDigits: 1 }) + ' %'; },
 
       // Ayuda flotante de una barra: el valor exacto de lo que la etiqueta abrevia.
@@ -336,9 +377,9 @@ async function iniciar() {
           y: caja.bottom + 6,
           titulo: g.etiqueta,
           filas: [
-            { clase: 'proy', valor: fmtPesos.format(g.proy), texto: `Proyectado · ${this.pct(g.pctTotal)} del total` },
-            { clase: 'ejec', valor: fmtPesos.format(g.ejec), texto: 'Ejecutado' },
-            { clase: 'pend', valor: fmtPesos.format(g.proy - g.ejec), texto: 'Por ejecutar' },
+            { clase: 'proy', valor: this.pesos(g.proy), texto: `Proyectado · ${this.pct(g.pctTotal)} del total` },
+            { clase: 'ejec', valor: this.pesos(g.ejec), texto: 'Ejecutado' },
+            { clase: 'pend', valor: this.pesos(g.proy - g.ejec), texto: 'Por ejecutar' },
           ],
         };
       },
@@ -348,12 +389,33 @@ async function iniciar() {
 
       // Mismo formato que el CSV de Materiales. Montos sin separador de miles y con
       // coma decimal, para que Excel en español los sume; fechas en AAAA-MM-DD.
-      exportarCsv() {
+      // La Diaria se baja de la base por lotes (no está entera en el navegador).
+      async exportarCsv() {
         const columnas = this.columnas.map(col => [COLUMNAS_INV[col][0], (r) => {
-          const v = r[col];
+          const v = this.valor(r, col);
           return typeof v === 'number' ? String(v).replace('.', ',') : v;
         }]);
-        descargarCsv(`inversion_${this.pestana}_${this.codigoFiltro || 'todos'}_${hoyIso()}.csv`, columnas, this.filtradas);
+        const nombre = `inversion_${this.pestana}_${this.codigoFiltro}_${hoyIso()}.csv`;
+        if (!this.enServidor) { descargarCsv(nombre, columnas, this.filtradas); return; }
+
+        const total = this.datos.diaria.cuantas;
+        const filas = [];
+        this.exportando = { hechas: 0, total };
+        try {
+          for (let desde = 0; desde < total; desde += LOTE_CSV) {
+            const { data, error } = await this.consultaDiaria().range(desde, desde + LOTE_CSV - 1);
+            if (error) throw error;
+            filas.push(...data);
+            this.exportando.hechas = filas.length;
+            if (data.length < LOTE_CSV) break;
+          }
+          descargarCsv(nombre, columnas, filas);
+        } catch (e) {
+          console.error(e);
+          this.datos.diaria.error = 'No se pudo exportar: ' + (e.message || e);
+        } finally {
+          this.exportando = null;
+        }
       },
 
       // ---------------------------------------------------------------- Fecha de corte
@@ -392,42 +454,114 @@ async function iniciar() {
 
       // ---------------------------------------------------------------- Carga
 
+      // Total o Semanal, completas para el mercado elegido. Si el usuario cambia
+      // de mercado a mitad de una carga, la respuesta vieja se descarta (turno).
       async cargarVista(clave) {
         const p = PESTANAS[clave];
         const d = this.datos[clave];
+        const mercado = this.filtros.mercado;
+        if (!mercado) return;
+        const turno = d.turno = (d.turno || 0) + 1;
         d.cargando = true;
         d.error = '';
         try {
           const filas = await traerTodoParalelo((opciones) => {
-            if (opciones) return sb.rpc(p.fn, {}, { get: true, ...opciones });
-            let q = sb.rpc(p.fn, {}, { get: true }).select(p.columnas.join(', '));
+            if (opciones) return sb.rpc(p.fn, {}, { get: true, ...opciones }).eq('mercado_id', mercado);
+            let q = sb.rpc(p.fn, {}, { get: true }).select([...p.columnas, 'campana_grupo'].join(', ')).eq('mercado_id', mercado);
             for (const o of p.orden) q = q.order(o);
             return q;
           });
+          if (turno !== d.turno) return;
           d.filas = Object.freeze(filas);
         } catch (e) {
+          if (turno !== d.turno) return;
           console.error(e);
           d.error = `No se pudo cargar ${p.vista}: ${e.message || e}`;
         }
         d.cargando = false;
       },
-      cargarVistas() { for (const clave of Object.keys(PESTANAS)) this.cargarVista(clave); },
+      // La Diaria: una página, ya filtrada y ordenada en la base, con el total.
+      consultaDiaria(opciones) {
+        const p = PESTANAS.diaria;
+        let q = sb.rpc(p.fn, { p_mercado: this.filtros.mercado, p_filtros: this.filtrosServidor }, opciones)
+          .select(p.columnas.join(', '));
+        for (const o of p.orden) q = q.order(o);
+        return q;
+      },
+      async cargarDiaria() {
+        const d = this.datos.diaria;
+        if (!this.filtros.mercado) return;
+        const turno = d.turno = (d.turno || 0) + 1;
+        d.cargando = true;
+        d.error = '';
+        const desde = this.pagina * POR_PAGINA_DIARIA;
+        const { data, error, count } = await this.consultaDiaria({ count: 'exact' }).range(desde, desde + POR_PAGINA_DIARIA - 1);
+        if (turno !== d.turno) return;
+        if (error) {
+          console.error(error);
+          d.error = `No se pudo cargar v_inversion_diaria: ${error.message || error}`;
+        } else {
+          d.filas = Object.freeze(data);
+          d.cuantas = count || 0;
+        }
+        d.cargando = false;
+      },
+
+      // KPIs, gráficos y opciones de los filtros: agregados de la base.
+      async cargarResumen() {
+        const r = this.resumen;
+        if (!this.filtros.mercado) return;
+        const turno = r.turno = (r.turno || 0) + 1;
+        r.cargando = true;
+        r.error = '';
+        const { data, error } = await sb.rpc('fn_inversion_resumen',
+          { p_mercado: this.filtros.mercado, p_filtros: this.filtrosServidor });
+        if (turno !== r.turno) return;
+        if (error) {
+          console.error(error);
+          r.error = `No se pudo calcular el resumen: ${error.message || error}`;
+        } else {
+          r.datos = Object.freeze(data);
+        }
+        r.cargando = false;
+      },
+
+      // Un filtro cambia: resumen y Diaria se vuelven a pedir a la base (con una
+      // pausa corta, para no pedir una vez por cada casilla que se marca).
+      pedirFiltrado() {
+        clearTimeout(this._esperaFiltro);
+        this._esperaFiltro = setTimeout(() => {
+          this.cargarResumen();
+          if (this.enServidor) this.cargarDiaria();
+        }, 250);
+      },
+
+      cargarVistas() {
+        this.cargarVista('total');
+        this.cargarVista('semanal');
+        this.cargarResumen();
+        if (this.enServidor) this.cargarDiaria();
+        else this.datos.diaria.cargando = false;
+      },
 
       async cargar() {
-        this.cargarVistas();
         try {
-          const [mercados, mis, propios, corte] = await Promise.all([
-            traerTodo(() => sb.from('mercados').select('id, codigo, nombre').order('id')),
+          const [mercados, mis, propios, corte, catalogos] = await Promise.all([
+            traerTodo(() => sb.from('mercados').select('id, codigo, nombre, moneda').order('id')),
             sb.rpc('fn_mis_mercados'),
             traerTodo(() => sb.from('usuario_mercados').select('mercado_id').eq('usuario_id', this.usuario.id).order('mercado_id')),
             sb.from('configuracion').select('valor').eq('clave', 'fecha_corte').maybeSingle(),
+            cargarCatalogos(),
           ]);
+          this.catalogoCosto = catalogos.tiposCosto;
           if (mis.error) throw mis.error;
           if (corte.error) throw corte.error;
           this.mercados = mercados;
           this.misMercadoIds = (mis.data || []).map(x => (typeof x === 'object' ? Object.values(x)[0] : x)).map(Number);
           this.corte = { valor: (corte.data && corte.data.valor) || null, cargado: true };
-          this.filtros.mercado = mercadoInicial(this.misMercados, propios.map(p => p.mercado_id));
+          // Nunca «Todos»: sin mercado recordado, el propio o el primero.
+          const inicial = mercadoInicial(this.misMercados, propios.map(p => p.mercado_id));
+          this.filtros.mercado = inicial || (this.misMercados[0] || {}).id || '';
           if (!this.misMercados.length) {
             this.errorCarga = 'Tu usuario no tiene mercados asignados. Pide a un administrador que te los asigne.';
           }
