@@ -34,3 +34,11 @@
   padding: 12px 14px;
 }
 .clave-caja .clave { flex: 1; font-size: 22px; letter-spacing: 0.08em; user-select: all; }
+
+/* Tasas de cambio */
+.tasas { margin-top: 18px; }
+.tasa-nueva { align-items: end; }
+.tasa-nueva .boton-tasa { justify-content: flex-end; }
+.tasa-error { margin: 0 16px 12px; }
+.tabla-tasas .num { text-align: right; }
+.tabla-tasas .tenue { color: var(--mut, #7A7263); font-size: 11px; margin-left: 6px; }

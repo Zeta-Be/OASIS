@@ -102,6 +102,71 @@
       </div>
     </section>
 
+    <!-- Tasas de cambio: las usa el dashboard para la vista LATAM en USD -->
+    <section class="card tasas">
+      <div class="card-cab">
+        <h2>Tasas de cambio</h2>
+        <span class="estado-global">Moneda local por 1 USD. El dashboard usa la vigente de cada mercado.</span>
+      </div>
+
+      <form class="filtros tasa-nueva" @submit.prevent="agregarTasa" novalidate>
+        <div class="campo">
+          <label for="t-mercado">Mercado</label>
+          <select id="t-mercado" v-model="tasaNueva.mercado_id">
+            <option :value="null"></option>
+            <option v-for="m in mercadosConMoneda" :key="m.id" :value="m.id">{{ m.codigo }} · {{ m.moneda }}</option>
+          </select>
+        </div>
+        <div class="campo">
+          <label for="t-valor">Tasa (por 1 USD)</label>
+          <input id="t-valor" v-model="tasaNueva.valor" inputmode="decimal" autocomplete="off" placeholder="3.695,04">
+        </div>
+        <div class="campo">
+          <label for="t-desde">Rige desde</label>
+          <input id="t-desde" v-model="tasaNueva.vigente_desde" type="date">
+        </div>
+        <div class="campo boton-tasa">
+          <button class="btn p" type="submit" :disabled="cargando || tasaGuardando">{{ tasaGuardando ? 'Guardando…' : 'Agregar tasa' }}</button>
+        </div>
+      </form>
+      <div v-if="tasaError" class="alerta error tasa-error">{{ tasaError }}</div>
+
+      <div class="tabla-envoltura">
+        <table class="tabla tabla-tasas">
+          <thead>
+            <tr>
+              <th class="calc">Mercado</th>
+              <th class="calc num">Tasa por USD</th>
+              <th class="calc">Rige desde</th>
+              <th class="calc">Estado</th>
+              <th class="calc">Registrada por</th>
+              <th class="estado-col"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!tasasVista.length"><td colspan="6" class="vacio">{{ cargando ? 'Cargando…' : 'No hay tasas.' }}</td></tr>
+            <tr v-for="t in tasasVista" :key="t.id" :class="{ inactivo: t.estado === 'anterior' }">
+              <td class="calc">{{ codigoMercado(t.mercado_id) }} · {{ t.moneda }}</td>
+              <td class="calc num mono">{{ formatoTasa(t.valor_por_usd) }}</td>
+              <td class="calc mono">{{ fechaCorta(t.vigente_desde) }}</td>
+              <td class="calc"><span class="pill" :class="{ ok: t.estado === 'vigente', prop: t.estado === 'futura' }">{{ t.estado }}</span></td>
+              <td class="calc">{{ t.autor }} <span class="mono tenue">{{ fechaCorta(t.actualizado_en) }}</span></td>
+              <td class="estado-col">
+                <div class="acciones-fila">
+                  <template v-if="tasaBorrar === t.id">
+                    <span class="pregunta">¿Borrar esta tasa?</span>
+                    <button type="button" class="mini peligro" @click="borrarTasa(t)">Sí</button>
+                    <button type="button" class="mini" @click="tasaBorrar = null">No</button>
+                  </template>
+                  <button v-else type="button" class="mini" @click="tasaBorrar = t.id">Borrar</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- Panel lateral: alta, o la contraseña temporal recién generada -->
     <transition name="panel">
       <div v-if="panel" class="panel-fondo" @pointerdown.self="cerrarPanel">

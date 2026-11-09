@@ -7,7 +7,10 @@ const sb = window.supabase.createClient(
 
 const ROLES_INTERNOS = ['PLANNING', 'ZB', 'LECTURA', 'ADMIN'];
 const ROLES_EXTERNOS = ['PROVEEDOR', 'AGENCIA'];
+// CLIENTE (Mercado Libre) solo ve el dashboard; ADMIN, LECTURA y ZB también lo tienen en el menú.
+const ROLES_DASHBOARD = ['ADMIN', 'LECTURA', 'ZB', 'CLIENTE'];
 const esExterno = (usuario) => ROLES_EXTERNOS.includes(usuario.rol);
+const esCliente = (usuario) => usuario.rol === 'CLIENTE';
 
 // Fila de `usuarios` del login actual, o null.
 // RLS solo deja leer la fila propia y solo si el usuario está activo, así que
@@ -23,7 +26,7 @@ async function usuarioActual() {
     .maybeSingle();
 
   if (error) throw error;
-  const conocido = data && [...ROLES_INTERNOS, ...ROLES_EXTERNOS].includes(data.rol);
+  const conocido = data && [...ROLES_INTERNOS, ...ROLES_EXTERNOS, 'CLIENTE'].includes(data.rol);
   const usuario = conocido && data.activo ? data : null;
   return { session, usuario };
 }
@@ -32,7 +35,20 @@ async function usuarioActual() {
 // RLS, no esta redirección. Con contraseña temporal, primero a cambiarla.
 function paginaDeInicio(usuario) {
   if (usuario.debe_cambiar_clave) return 'clave.html';
+  if (esCliente(usuario)) return 'dashboard.html';
   return esExterno(usuario) ? 'portal.html' : 'compras.html';
+}
+
+// Páginas a las que el login puede devolver (?volver=…). Lista cerrada: nunca
+// una URL cualquiera.
+const PAGINAS_VOLVER = ['dashboard.html'];
+
+function paginaDeVuelta(usuario) {
+  const volver = new URLSearchParams(window.location.search).get('volver');
+  if (!usuario.debe_cambiar_clave && PAGINAS_VOLVER.includes(volver) && ROLES_DASHBOARD.includes(usuario.rol)) {
+    return volver;
+  }
+  return paginaDeInicio(usuario);
 }
 
 function irA(pagina) {
@@ -41,11 +57,21 @@ function irA(pagina) {
 }
 
 // Para páginas internas: sin sesión o sin acceso, vuelve al login; un externo
-// va al portal; con contraseña temporal, a cambiarla.
+// va al portal y un CLIENTE al dashboard; con contraseña temporal, a cambiarla.
 async function requerirAcceso() {
   const { session, usuario } = await usuarioActual();
   if (!session || !usuario) return irA('index.html');
-  if (usuario.debe_cambiar_clave || esExterno(usuario)) return irA(paginaDeInicio(usuario));
+  if (usuario.debe_cambiar_clave || esExterno(usuario) || esCliente(usuario)) return irA(paginaDeInicio(usuario));
+  return usuario;
+}
+
+// Para el dashboard: ADMIN, LECTURA, ZB y CLIENTE. Sin sesión, al login y de
+// vuelta aquí; un externo, al portal. La protección real está en la base
+// (fn_dashboard_*), esto es comodidad.
+async function requerirAccesoDashboard() {
+  const { session, usuario } = await usuarioActual();
+  if (!session || !usuario) return irA('index.html?volver=dashboard.html');
+  if (usuario.debe_cambiar_clave || !ROLES_DASHBOARD.includes(usuario.rol)) return irA(paginaDeInicio(usuario));
   return usuario;
 }
 
@@ -67,11 +93,12 @@ const NAVEGACION = [
   { clave: 'materiales', texto: 'Materiales', href: 'materiales.html' },
   { clave: 'inversion',  texto: 'Inversión',  href: 'inversion.html' },
   { clave: 'alertas',    texto: 'Alertas',    href: 'alertas.html' },
+  { clave: 'dashboard',  texto: 'Dashboard',  href: 'dashboard.html', roles: ['ADMIN', 'LECTURA', 'ZB'] },
   { clave: 'usuarios',   texto: 'Usuarios',   href: 'usuarios.html', solo: 'ADMIN' },
 ];
 
 function pintarBarra(contenedor, usuario, activa) {
-  const nav = NAVEGACION.filter(n => !n.solo || n.solo === usuario.rol).map(n => {
+  const nav = NAVEGACION.filter(n => (!n.solo || n.solo === usuario.rol) && (!n.roles || n.roles.includes(usuario.rol))).map(n => {
     const clase = n.clave === activa ? ' class="activo"' : '';
     const cuenta = n.clave === 'alertas' ? '<span class="cuenta-alertas mono"></span>' : '';
     return `<a href="${n.href}"${clase}>${n.texto}${cuenta}</a>`;

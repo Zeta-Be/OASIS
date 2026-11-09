@@ -1073,6 +1073,8 @@ def cargar_mercado(mercado, wb, dry_run, ensayo_sql, forzar_renumeracion=False):
             cur.execute("SELECT public.fn_recalcular_inversion_mercado(%s::smallint)", (carga.mercado_id,))
             carga.stats["inversion"] = cur.fetchone()[0]
         carga.alertas()
+        # El dashboard muestra «Datos al …» con esto (sql/dashboard.sql).
+        cur.execute("UPDATE mercados SET ultima_carga = now() WHERE id = %s", (carga.mercado_id,))
 
         if dry_run:
             conn.rollback()

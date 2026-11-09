@@ -11,9 +11,19 @@ const ROLES = [
   { valor: 'AGENCIA',   etiqueta: 'Agencia',   ayuda: 'portal: enlaces de sus mercados' },
   { valor: 'PROVEEDOR', etiqueta: 'Proveedor', ayuda: 'portal: reporte y evidencias' },
   { valor: 'LECTURA',   etiqueta: 'Lectura',   ayuda: 'consulta sin captura' },
+  { valor: 'CLIENTE',   etiqueta: 'Cliente',   ayuda: 'solo el dashboard de sus mercados' },
   { valor: 'ADMIN',     etiqueta: 'Admin',     ayuda: 'todo, en todos los mercados' },
 ];
 const ETIQUETA_ROL = { ...Object.fromEntries(ROLES.map(r => [r.valor, r.etiqueta])), PLANNING: 'Planning (antiguo)' };
+
+// '3.695,04', '3695.04' o '3695,04' → 3695.04; null si no es un número > 0.
+function numeroTasa(texto) {
+  let t = String(texto || '').replace(/\s/g, '');
+  if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.');
+  const n = Number(t);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+const hoyISO = () => new Date().toLocaleDateString('en-CA');   // aaaa-mm-dd local
 
 // Igual que fn_admin_crear_usuario en la base.
 const RE_CORREO = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/;
@@ -55,6 +65,12 @@ async function iniciar() {
       confirmar: null,         // { id, accion, pregunta }
       panel: null,
       copiada: false,
+      // Tasas de cambio (sql/dashboard.sql): moneda local por 1 USD, para la vista LATAM del dashboard.
+      tasas: [],
+      tasaNueva: { mercado_id: null, valor: '', vigente_desde: hoyISO() },
+      tasaError: '',
+      tasaGuardando: false,
+      tasaBorrar: null,        // id de la tasa que se está confirmando
     }),
 
     computed: {
@@ -92,6 +108,27 @@ async function iniciar() {
         return e;
       },
       hayErrores() { return Object.keys(this.erroresPanel).length > 0; },
+
+      // ---- tasas: la vigente de cada mercado es la de fecha más reciente que no sea futura
+      tasasVista() {
+        const hoy = hoyISO();
+        const vigente = new Map();
+        for (const t of this.tasas) {
+          if (t.vigente_desde > hoy) continue;
+          const v = vigente.get(t.mercado_id);
+          if (!v || t.vigente_desde > v.vigente_desde) vigente.set(t.mercado_id, t);
+        }
+        const nombres = new Map(this.usuarios.map(u => [u.id, u.nombre]));
+        return [...this.tasas]
+          .sort((a, b) => this.codigoMercado(a.mercado_id).localeCompare(this.codigoMercado(b.mercado_id))
+                          || b.vigente_desde.localeCompare(a.vigente_desde))
+          .map(t => ({
+            ...t,
+            estado: t.vigente_desde > hoy ? 'futura' : vigente.get(t.mercado_id) === t ? 'vigente' : 'anterior',
+            autor: t.actualizado_por ? (nombres.get(t.actualizado_por) || `#${t.actualizado_por}`) : 'carga inicial',
+          }));
+      },
+      mercadosConMoneda() { return this.mercados.filter(m => m.moneda); },
     },
 
     watch: {
@@ -216,6 +253,53 @@ async function iniciar() {
         this.copiada = false;
       },
 
+      // ---------------------------------------------------------------- Tasas de cambio
+
+      formatoTasa(v) { return Number(v).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 4 }); },
+      fechaCorta(iso) { return iso ? iso.slice(0, 10).split('-').reverse().join('/') : ''; },
+
+      async cargarTasas() {
+        const { data, error } = await sb.from('tasas_cambio')
+          .select('id, mercado_id, moneda, valor_por_usd, vigente_desde, actualizado_por, actualizado_en')
+          .order('vigente_desde', { ascending: false });
+        if (error) throw error;
+        this.tasas = data;
+      },
+
+      // Cambiar una tasa es agregar otra con su fecha de vigencia: así queda la historia.
+      async agregarTasa() {
+        const n = this.tasaNueva;
+        this.tasaError = '';
+        const valor = numeroTasa(n.valor);
+        if (!n.mercado_id) { this.tasaError = 'Elige el mercado'; return; }
+        if (!valor) { this.tasaError = 'La tasa tiene que ser un número mayor que 0'; return; }
+        if (!n.vigente_desde) { this.tasaError = 'Elige desde cuándo rige'; return; }
+        const m = this.mercadosPorId.get(n.mercado_id);
+        this.tasaGuardando = true;
+        try {
+          const { error } = await sb.from('tasas_cambio')
+            .insert({ mercado_id: n.mercado_id, moneda: m.moneda, valor_por_usd: valor, vigente_desde: n.vigente_desde });
+          if (error) {
+            this.tasaError = error.code === '23505'
+              ? `Ya hay una tasa de ${m.codigo} que rige desde esa fecha`
+              : 'No se guardó: ' + error.message;
+            return;
+          }
+          this.tasaNueva = { mercado_id: n.mercado_id, valor: '', vigente_desde: hoyISO() };
+          await this.cargarTasas();
+        } finally {
+          this.tasaGuardando = false;
+        }
+      },
+
+      async borrarTasa(t) {
+        this.tasaError = '';
+        const { error } = await sb.from('tasas_cambio').delete().eq('id', t.id);
+        this.tasaBorrar = null;
+        if (error) { this.tasaError = 'No se borró: ' + error.message; return; }
+        await this.cargarTasas();
+      },
+
       // ---------------------------------------------------------------- Carga
 
       async cargar() {
@@ -224,7 +308,7 @@ async function iniciar() {
             traerTodo(() => sb.from('usuarios')
               .select('id, correo, nombre, rol, proveedor_id, activo, auth_user_id, debe_cambiar_clave').order('correo')),
             traerTodo(() => sb.from('usuario_mercados').select('usuario_id, mercado_id').order('usuario_id')),
-            traerTodo(() => sb.from('mercados').select('id, codigo, nombre').order('id')),
+            traerTodo(() => sb.from('mercados').select('id, codigo, nombre, moneda').order('id')),
             traerTodo(() => sb.from('proveedores').select('id, mercado_id, nombre, activo').order('nombre')),
           ]);
           this.usuarios = usuarios.map(u => ({ ...u, _ocupado: false, _error: '' }));
@@ -236,6 +320,7 @@ async function iniciar() {
           this.mercadosDe = m;
           this.mercados = mercados;
           this.proveedores = proveedores;
+          await this.cargarTasas();
         } catch (e) {
           console.error(e);
           this.errorCarga = 'No se pudieron cargar los usuarios: ' + (e.message || e);
