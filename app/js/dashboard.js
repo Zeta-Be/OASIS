@@ -17,11 +17,10 @@
 // Quién ve el enlace de vuelta a OASIS. CLIENTE no ve nada de OASIS.
 const ROLES_CON_OASIS = ['ADMIN', 'LECTURA', 'ZB'];
 
-// Aviso solo para ADMIN, en la portada y en LATAM. Para quitarlo: AVISO_ADMIN = null.
-const AVISO_ADMIN = {
-  es: 'Faltan datos de Mercado Pago en MLU, MLC y MLM',
-  pt: 'Faltam dados do Mercado Pago em MLU, MLC e MLM',
-};
+// Aviso solo para ADMIN, en la portada y en LATAM. Para mostrar uno:
+// AVISO_ADMIN = { es: '…', pt: '…' }. Se usó para avisar que faltaba Mercado
+// Pago, cargado el 09-11-2026.
+const AVISO_ADMIN = null;
 
 const CLAVE_IDIOMA = 'oasis.dashboard.idioma';
 const CLAVE_TEMA = 'oasis.dashboard.tema';
