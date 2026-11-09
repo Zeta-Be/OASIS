@@ -11,14 +11,14 @@
 --
 -- Requiere sql/fase3_portal.sql y sql/fase3_evidencias.sql aplicados.
 --
--- El proveedor de prueba es EFECTIMEDIOS (MCO). El 04-11-2026 tenía 261
+-- El proveedor de prueba es EFECTIMEDIOS (MCO). El 09-11-2026 tenía 342
 -- materiales; si el Sheets agrega o quita materiales suyos, actualizar
 -- ESPERADO_PROVEEDOR.
 -- =============================================================================
 
 DO $pruebas$
 DECLARE
-    ESPERADO_PROVEEDOR constant integer := 261;
+    ESPERADO_PROVEEDOR constant integer := 342;
     COLUMNAS_VISTA constant text := 'id,codigo,sub_campana,referencia,fecha_inicio,fecha_fin,enlace,reporte_implementacion,'
                                  || 'evidencia_url,compra,proveedor,formato,ubicacion,ciudad,tipo_costo';
     TABLAS_CERO constant text[] := ARRAY['compras', 'mercados', 'proveedores', 'proveedor_grupos', 'configuracion',
