@@ -14,6 +14,13 @@
 --     una compra es MP cuando su columna CLIENTE dice MP; lo demás es ML.
 --     La firma vieja de 3 argumentos se elimina: dos firmas a la vez dejarían
 --     ambigua la llamada rpc de la pantalla.
+--   * un alias puede quedar POR CONFIRMAR (por_confirmar, con su nota): una
+--     taxonomía provisional para no frenar la carga mientras el equipo del
+--     mercado confirma la buena. Alertas los muestra en la card «Taxonomías
+--     por confirmar»; al corregirla, fn_asignar_taxonomia apaga la marca y
+--     también re-apunta las compras de esa BU que ya se cargaron con la
+--     taxonomía provisional. Todo cambio en campanas_alias queda en auditoría
+--     (trigger auditar, el mismo de compras y materiales).
 --
 -- cargar_oasis.py lee los alias filtrando bu = 'ML' en cuanto ve la columna
 -- (los Flows que carga hoy son de Mercado Libre; la carga MP la pasará como
@@ -33,6 +40,19 @@ BEGIN;
 
 ALTER TABLE public.campanas_alias
     ADD COLUMN IF NOT EXISTS bu text NOT NULL DEFAULT 'ML' CHECK (bu IN ('ML', 'MP'));
+ALTER TABLE public.campanas_alias
+    ADD COLUMN IF NOT EXISTS por_confirmar boolean NOT NULL DEFAULT false;
+ALTER TABLE public.campanas_alias
+    ADD COLUMN IF NOT EXISTS nota text;
+
+COMMENT ON COLUMN public.campanas_alias.por_confirmar IS
+    'Taxonomía provisional, a confirmar con el equipo del mercado. Se ve en Alertas; la fecha es creado_en y el porqué va en nota.';
+
+-- Cada cambio de alias queda en auditoría, como compras y materiales.
+DROP TRIGGER IF EXISTS auditar ON public.campanas_alias;
+CREATE TRIGGER auditar
+    AFTER INSERT OR UPDATE OR DELETE ON public.campanas_alias
+    FOR EACH ROW EXECUTE FUNCTION public.fn_auditar();
 
 -- Los alias existentes toman la BU de su taxonomía (hoy, todos ML).
 UPDATE public.campanas_alias
@@ -55,10 +75,12 @@ SECURITY INVOKER
 SET search_path = public
 AS $$
 DECLARE
-    v_codigo text;
-    v_tax    text;
-    v_bu     text;
-    v_n      integer;
+    v_codigo   text;
+    v_tax      text;
+    v_bu       text;
+    v_tax_prev text;
+    v_prev_pc  boolean;
+    v_n        integer;
 BEGIN
     IF coalesce((SELECT public.fn_rol_actual()) IN ('PLANNING', 'ZB', 'ADMIN'), false) = false
        OR p_mercado_id NOT IN (SELECT public.fn_mis_mercados()) THEN
@@ -79,19 +101,31 @@ BEGIN
         RAISE EXCEPTION 'Falta el texto del Flow' USING ERRCODE = '22023';
     END IF;
 
+    -- Si ya había un alias (por ejemplo, uno provisional), su taxonomía vieja
+    -- sirve para re-apuntar las compras que la carga ya tradujo con ella.
+    SELECT taxonomia, por_confirmar INTO v_tax_prev, v_prev_pc
+    FROM campanas_alias
+    WHERE mercado_id = p_mercado_id AND bu = v_bu
+      AND upper(btrim(texto_flow)) = upper(btrim(p_texto));
+
+    -- Corregir desde Alertas confirma: la marca se apaga y la nota se borra.
     INSERT INTO campanas_alias (mercado_id, bu, texto_flow, taxonomia, creado_por)
     VALUES (p_mercado_id, v_bu, btrim(p_texto), v_tax, (SELECT id FROM public.fn_usuario_actual()))
     ON CONFLICT (mercado_id, bu, upper(btrim(texto_flow))) DO UPDATE
-        SET taxonomia = EXCLUDED.taxonomia, creado_por = EXCLUDED.creado_por, creado_en = now();
+        SET taxonomia = EXCLUDED.taxonomia, por_confirmar = false, nota = NULL,
+            creado_por = EXCLUDED.creado_por, creado_en = now();
 
-    -- Corrige solo las compras de esa BU en el mercado.
+    -- Corrige solo las compras de esa BU en el mercado: las que siguen sin
+    -- campaña y, si el alias anterior era provisional, también las que la
+    -- carga ya dejó apuntando a la taxonomía provisional.
     UPDATE compras
     SET campana_taxonomia = v_tax,
         campana_id = public.fn_campana_de_taxonomia(p_mercado_id, v_tax),
         actualizado_en = now()
     WHERE mercado_id = p_mercado_id
       AND upper(btrim(campana_texto)) = upper(btrim(p_texto))
-      AND campana_id IS NULL
+      AND (campana_id IS NULL
+           OR (coalesce(v_prev_pc, false) AND campana_taxonomia = v_tax_prev))
       AND CASE WHEN upper(btrim(cliente)) = 'MP' THEN 'MP' ELSE 'ML' END = v_bu;
     GET DIAGNOSTICS v_n = ROW_COUNT;
     RETURN v_n;

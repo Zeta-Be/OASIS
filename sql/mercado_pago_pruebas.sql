@@ -16,6 +16,8 @@ DECLARE
     v_mlu  smallint;
     c_ml   bigint;
     c_mp   bigint;
+    c_prov bigint;
+    u_zb   bigint;
     n      integer;
     n2     integer;
     t      text;
@@ -98,6 +100,37 @@ BEGIN
         r := r || text 'OK     LECTURA no corrige campañas (42501)';
     END;
     RESET ROLE;
+
+    -- ============================================================== Alias por confirmar
+    -- Una taxonomía provisional (como la que se siembra antes de la carga MP) y
+    -- una compra que la carga ya tradujo con ella.
+    INSERT INTO public.campanas_alias (mercado_id, bu, texto_flow, taxonomia, por_confirmar, nota)
+    VALUES (v_mlu, 'MP', 'POINT PRUEBA', 'MLU_MP_UF-CON_SELLERS_POINTSMART_X', true, 'Confirmar tipo y audiencia con el equipo');
+    INSERT INTO public.compras (mercado_id, codigo, cliente, valor_total, valor_total_manual, campana_texto, campana_taxonomia)
+    VALUES (v_mlu, 'PRUEBA-BU-PROV', 'MP', 100, true, 'POINT PRUEBA', 'MLU_MP_UF-CON_SELLERS_POINTSMART_X')
+    RETURNING id INTO c_prov;
+    SELECT count(*) INTO n FROM public.auditoria WHERE tabla = 'campanas_alias' AND campo = '(alta)'
+      AND fila_id = (SELECT id FROM public.campanas_alias WHERE mercado_id = v_mlu AND bu = 'MP' AND upper(btrim(texto_flow)) = 'POINT PRUEBA');
+    r := r || format('%s  el alta del alias queda en auditoría (%s)', CASE WHEN n = 1 THEN 'OK   ' ELSE 'FALLA' END, n);
+
+    SELECT id INTO u_zb FROM public.usuarios WHERE correo = 'prueba.zb.mp@oasis.invalid';
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_zb, 'role', 'authenticated')::text, true);
+    SET LOCAL ROLE authenticated;
+    n := public.fn_asignar_taxonomia(v_mlu, 'POINT PRUEBA', 'MLU_MP_UF-AW_SELLERS_POINTSMART_X');
+    SELECT campana_taxonomia INTO t FROM public.compras WHERE id = c_prov;
+    r := r || format('%s  confirmar re-apunta la compra ya cargada con la provisional (%s → %s)',
+                     CASE WHEN n = 1 AND t = 'MLU_MP_UF-AW_SELLERS_POINTSMART_X' THEN 'OK   ' ELSE 'FALLA' END, n, t);
+    SELECT count(*) INTO n FROM public.campanas_alias
+    WHERE mercado_id = v_mlu AND bu = 'MP' AND upper(btrim(texto_flow)) = 'POINT PRUEBA'
+      AND por_confirmar = false AND nota IS NULL;
+    RESET ROLE;
+    -- La auditoría se lee como postgres: un ZB no la ve (solo ADMIN).
+    SELECT count(*) INTO n2 FROM public.auditoria a
+    JOIN public.campanas_alias ca ON ca.id = a.fila_id
+    WHERE a.tabla = 'campanas_alias' AND ca.mercado_id = v_mlu AND upper(btrim(ca.texto_flow)) = 'POINT PRUEBA'
+      AND a.campo IN ('taxonomia', 'por_confirmar') AND a.usuario_id = u_zb;
+    r := r || format('%s  la marca se apaga (%s) y el cambio queda en auditoría con el usuario (%s campos)',
+                     CASE WHEN n = 1 AND n2 = 2 THEN 'OK   ' ELSE 'FALLA' END, n, n2);
 
     -- ============================================================== La tabla misma
     BEGIN
