@@ -16,9 +16,17 @@
 --     su propio rol, nunca sin un ADMIN activo, solo ADMIN ejecuta (42501);
 --   * cambiar solo el nombre no cierra sesiones;
 --   * tasas_cambio: auditoría con antes y después, no se borra la única tasa
---     de un mercado ni la que rige hoy si no queda otra.
+--     de un mercado ni la que rige hoy si no queda otra;
+--   * borrar usuarios (sql/usuarios_borrar.sql): un activo con login no se
+--     borra; un desactivado sí, con sus mercados y su sesión fuera, la fila
+--     (baja) en auditoría con el ADMIN, las FKs de rastro en NULL y sus filas
+--     históricas de auditoría marcadas con «nombre · correo (borrado)» (las de
+--     otros autores quedan sin marca); un ADMIN inactivo se borra sin tocar la
+--     regla del último activo; el alta a medias (sin login) se borra aunque
+--     esté activa; solo ADMIN (42501).
 --
--- Requiere sql/usuarios.sql, sql/dashboard.sql y sql/usuarios_edicion.sql.
+-- Requiere sql/usuarios.sql, sql/dashboard.sql, sql/usuarios_edicion.sql y
+-- sql/usuarios_borrar.sql.
 -- =============================================================================
 
 DO $pruebas$
@@ -52,6 +60,7 @@ DECLARE
     t1        bigint;
     t2        bigint;
     t3        bigint;
+    d_id      bigint;    -- fila de duplicados_propuestos para la FK de rastro
     -- auxiliares
     j         jsonb;
     n         integer;
@@ -467,6 +476,108 @@ BEGIN
     DELETE FROM public.tasas_cambio;
     GET DIAGNOSTICS n2 = ROW_COUNT;
     r := r || format('%s  Un no-ADMIN edita %s y borra %s tasas', CASE WHEN n = 0 AND n2 = 0 THEN 'OK   ' ELSE 'FALLA' END, n, n2);
+    RESET ROLE;
+
+
+    -- ============================================================== Borrar usuarios
+    r := r || text '--- Borrar usuarios (sql/usuarios_borrar.sql)';
+    r := r || format('%s  fn_admin_borrar_usuario_sin_login quedó absorbida (ya no existe)',
+                     CASE WHEN to_regproc('public.fn_admin_borrar_usuario_sin_login') IS NULL THEN 'OK   ' ELSE 'FALLA' END);
+    SELECT count(*) INTO n FROM pg_constraint c
+    WHERE c.contype = 'f' AND c.confrelid = 'public.usuarios'::regclass AND c.confdeltype NOT IN ('n', 'c');
+    r := r || format('%s  Ninguna FK hacia usuarios sin SET NULL o CASCADE (%s)', CASE WHEN n = 0 THEN 'OK   ' ELSE 'FALLA' END, n);
+
+    -- Preparación del rastro: una tasa tocada por u_adm2 y una propuesta resuelta por u_cli.
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_adm2, 'role', 'authenticated')::text, true);
+    SET LOCAL ROLE authenticated;
+    UPDATE public.tasas_cambio SET valor_por_usd = valor_por_usd + 0.5
+    WHERE id = (SELECT id FROM public.tasas_cambio WHERE mercado_id = v_mco ORDER BY vigente_desde DESC LIMIT 1)
+    RETURNING id INTO t1;
+    RESET ROLE;
+    SELECT count(*) INTO n FROM public.tasas_cambio WHERE id = t1 AND actualizado_por = u_adm2;
+    r := r || format('%s  Preparación: la tasa %s quedó con actualizado_por = u_adm2', CASE WHEN n = 1 THEN 'OK   ' ELSE 'FALLA' END, t1);
+    INSERT INTO public.duplicados_propuestos (mercado_id, tipo, valores, canonico, confianza, estado, resuelto_en, resuelto_por)
+    VALUES (v_mco, 'PROVEEDOR', '["X","Y"]', 'X', 'ALTA', 'RECHAZADO', now(), u_cli)
+    RETURNING id INTO d_id;
+    INSERT INTO auth.sessions (id, user_id, created_at, updated_at) VALUES (gen_random_uuid(), a_cli, now(), now());
+
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_adm, 'role', 'authenticated')::text, true);
+    SET LOCAL ROLE authenticated;
+    -- Rechazos
+    BEGIN
+        PERFORM public.fn_admin_borrar_usuario(u_cli);
+        r := r || text 'FALLA  Borra un usuario activo con login';
+    EXCEPTION WHEN SQLSTATE '22023' THEN
+        r := r || format('OK     No borra un activo con login: %s', SQLERRM);
+    END;
+    BEGIN
+        PERFORM public.fn_admin_borrar_usuario(u_adm);
+        r := r || text 'FALLA  Un ADMIN se borra a sí mismo';
+    EXCEPTION WHEN SQLSTATE '22023' THEN
+        r := r || format('OK     Nadie se borra a sí mismo: %s', SQLERRM);
+    END;
+    BEGIN
+        PERFORM public.fn_admin_borrar_usuario(-1);
+        r := r || text 'FALLA  Borra un usuario que no existe';
+    EXCEPTION WHEN SQLSTATE '22023' THEN
+        r := r || format('OK     Usuario inexistente: %s', SQLERRM);
+    END;
+
+    -- Un ADMIN inactivo sí se borra (u_adm sigue activo: el trigger ultimo_admin no corta).
+    PERFORM public.fn_admin_cambiar_activo(u_adm2, false);
+    j := public.fn_admin_borrar_usuario(u_adm2);
+    r := r || format('%s  Borra un ADMIN inactivo y devuelve correo y login (%s)',
+                     CASE WHEN j ->> 'correo' = 'prueba.admin2@oasis.invalid' AND (j ->> 'auth_user_id')::uuid = a_adm2
+                          THEN 'OK   ' ELSE 'FALLA' END, j ->> 'correo');
+
+    -- Un CLIENTE desactivado, con mercados, sesión y rastro.
+    PERFORM public.fn_admin_cambiar_activo(u_cli, false);
+    j := public.fn_admin_borrar_usuario(u_cli);
+    RESET ROLE;
+    SELECT count(*) INTO n FROM public.usuarios WHERE id IN (u_adm2, u_cli);
+    SELECT count(*) INTO n2 FROM public.usuario_mercados WHERE usuario_id = u_cli;
+    r := r || format('%s  Las filas ya no existen (%s) y sus mercados tampoco (%s)',
+                     CASE WHEN n = 0 AND n2 = 0 THEN 'OK   ' ELSE 'FALLA' END, n, n2);
+    SELECT count(*) INTO n FROM auth.sessions WHERE user_id = a_cli;
+    r := r || format('%s  Su sesión abierta se cerró (%s)', CASE WHEN n = 0 THEN 'OK   ' ELSE 'FALLA' END, n);
+    SELECT count(*) INTO n FROM public.auditoria
+    WHERE tabla = 'usuarios' AND fila_id IN (u_adm2, u_cli) AND campo = '(baja)' AND usuario_id = u_adm;
+    SELECT count(*) INTO n2 FROM public.auditoria
+    WHERE tabla = 'usuarios' AND fila_id = u_cli AND campo = 'mercados' AND valor_anterior = 'MCO,MLA' AND valor_nuevo IS NULL;
+    r := r || format('%s  Auditoría: %s filas (baja) con el ADMIN y mercados MCO,MLA → NULL (%s)',
+                     CASE WHEN n = 2 AND n2 = 1 THEN 'OK   ' ELSE 'FALLA' END, n, n2);
+    SELECT count(*) INTO n FROM public.tasas_cambio WHERE id = t1 AND actualizado_por IS NULL;
+    SELECT count(*) INTO n2 FROM public.duplicados_propuestos WHERE id = d_id AND resuelto_por IS NULL;
+    r := r || format('%s  Las FKs de rastro no estorban: tasas_cambio.actualizado_por (%s) y duplicados_propuestos.resuelto_por (%s) en NULL',
+                     CASE WHEN n = 1 AND n2 = 1 THEN 'OK   ' ELSE 'FALLA' END, n, n2);
+    -- Las filas históricas del borrado conservan quién era; las de otros, sin marca.
+    SELECT count(*) INTO n FROM public.auditoria
+    WHERE tabla = 'tasas_cambio' AND fila_id = t1 AND campo = 'valor_por_usd' AND usuario_id IS NULL
+      AND usuario_borrado = 'Prueba admin 2 · prueba.admin2@oasis.invalid (borrado)';
+    SELECT count(*) INTO n2 FROM public.auditoria WHERE usuario_id = u_adm AND usuario_borrado IS NOT NULL;
+    r := r || format('%s  Su auditoría histórica queda marcada «(borrado)» con nombre y correo (%s) y la de otros sin marca (%s con marca)',
+                     CASE WHEN n = 1 AND n2 = 0 THEN 'OK   ' ELSE 'FALLA' END, n, n2);
+
+    -- El alta a medias (sin login) se borra aunque esté activa: lo usa la Edge Function.
+    INSERT INTO public.usuarios (correo, nombre, rol, activo) VALUES ('prueba.sinlogin@oasis.invalid', 'Alta a medias', 'ZB', true);
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_adm, 'role', 'authenticated')::text, true);
+    SET LOCAL ROLE authenticated;
+    j := public.fn_admin_borrar_usuario((SELECT id FROM public.usuarios WHERE correo = 'prueba.sinlogin@oasis.invalid'));
+    r := r || format('%s  Un alta a medias (activa, sin login) sí se borra (login devuelto: %s)',
+                     CASE WHEN j ->> 'auth_user_id' IS NULL THEN 'OK   ' ELSE 'FALLA' END, coalesce(j ->> 'auth_user_id', 'ninguno'));
+    RESET ROLE;
+    SELECT count(*) INTO n FROM public.usuarios WHERE correo = 'prueba.sinlogin@oasis.invalid';
+    r := r || format('%s  Y su fila ya no existe (%s)', CASE WHEN n = 0 THEN 'OK   ' ELSE 'FALLA' END, n);
+
+    -- Solo ADMIN.
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_zb, 'role', 'authenticated')::text, true);
+    SET LOCAL ROLE authenticated;
+    BEGIN
+        PERFORM public.fn_admin_borrar_usuario(u_prov);
+        r := r || text 'FALLA  Un no-ADMIN borra usuarios';
+    EXCEPTION WHEN insufficient_privilege THEN
+        r := r || text 'OK     Un no-ADMIN llama a fn_admin_borrar_usuario: 42501';
+    END;
     RESET ROLE;
 
     RAISE EXCEPTION E'PRUEBAS TERMINADAS — % FALLAS — todo revertido\n%',

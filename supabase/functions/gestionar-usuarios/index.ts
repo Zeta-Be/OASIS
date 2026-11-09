@@ -11,6 +11,11 @@
 //                El correo no se edita. Si cambia el acceso (rol, mercados o
 //                proveedor), fn_admin_editar_usuario cierra en la base las
 //                sesiones de ese login: no hace falta la llave secreta.
+//   borrar       { usuario_id } -> { borrado, correo, advertencia }
+//                Definitivo. Solo un usuario desactivado (la base lo exige).
+//                Primero la base (fila, mercados, auditoría de la baja) y
+//                después el login en Auth; si Auth falla, advertencia dice que
+//                el login quedó huérfano (sin fila en usuarios no accede a nada).
 //
 // Dos clientes, a propósito:
 //   * el del ADMIN (su JWT) para todo lo de la base: las funciones fn_admin_*
@@ -154,7 +159,8 @@ Deno.serve(async (req) => {
         await crearLogin(admin, nuevo.correo, clave);
       } catch (e) {
         // Sin login no hay usuario: se deshace la fila (queda en auditoría).
-        await sb.rpc("fn_admin_borrar_usuario_sin_login", { p_usuario_id: nuevo.id });
+        // fn_admin_borrar_usuario permite borrar un alta a medias (sin login).
+        await sb.rpc("fn_admin_borrar_usuario", { p_usuario_id: nuevo.id });
         throw e;
       }
       const usuario = await leerUsuario(sb, nuevo.id);
@@ -202,6 +208,23 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ---- borrar definitivamente (solo desactivados; la base lo valida)
+    if (accion === "borrar") {
+      const r = await rpc<{ correo: string; auth_user_id: string | null }>(
+        sb, "fn_admin_borrar_usuario", { p_usuario_id: id });
+      let advertencia: string | null = null;
+      if (r.auth_user_id) {
+        const { error } = await admin.auth.admin.deleteUser(r.auth_user_id);
+        if (error) {
+          // La fila ya no existe y sin ella el login no accede a nada; no se
+          // deshace: se avisa para limpiarlo a mano.
+          advertencia = `El usuario se borró de OASIS, pero su login (${r.correo}) quedó en Auth: ` +
+            "bórralo en Authentication → Users. " + error.message;
+        }
+      }
+      return responder({ borrado: true, usuario_id: id, correo: r.correo, advertencia });
+    }
+
     // ---- nueva contraseña temporal
     if (accion === "nueva_clave") {
       const actual = await leerUsuario(sb, id);
@@ -218,7 +241,7 @@ Deno.serve(async (req) => {
       return responder({ usuario, clave });
     }
 
-    return responder({ error: "accion: crear, editar, desactivar, reactivar o nueva_clave" }, 400);
+    return responder({ error: "accion: crear, editar, borrar, desactivar, reactivar o nueva_clave" }, 400);
   } catch (e) {
     if (e instanceof Rechazo) return responder({ error: e.message }, e.estado);
     console.error(e);

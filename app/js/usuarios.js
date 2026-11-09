@@ -109,6 +109,8 @@ async function iniciar() {
       proveedores: [],
       filtros: { buscar: '', rol: '', estado: '' },
       confirmar: null,         // { id, accion, pregunta }
+      borrarU: null,           // { id, escrito }: confirmación de borrado, escribiendo el correo
+      avisoGlobal: '',         // resultado de un borrado (o su advertencia)
       panel: null,             // { modo: 'nuevo' | 'editar', ... } o { clave, ... }
       copiada: false,
       // Tasas de cambio (sql/dashboard.sql): moneda local por 1 USD, para la vista LATAM del dashboard.
@@ -264,7 +266,39 @@ async function iniciar() {
         };
         u._error = '';
         u._aviso = '';
+        this.borrarU = null;
         this.confirmar = { id: u.id, accion, pregunta: preguntas[accion] };
+      },
+
+      // Borrar es definitivo: se confirma escribiendo el correo exacto.
+      pedirBorrar(u) {
+        u._error = '';
+        u._aviso = '';
+        this.confirmar = null;
+        this.borrarU = { id: u.id, escrito: '' };
+        nextTick(() => {
+          const el = document.getElementById('borrar-correo');
+          if (el) el.focus();
+        });
+      },
+      coincideBorrar(u) {
+        return !!this.borrarU && this.borrarU.escrito.trim().toLowerCase() === u.correo.toLowerCase();
+      },
+      async borrarDefinitivo(u) {
+        if (!this.coincideBorrar(u) || u._ocupado) return;
+        u._ocupado = true;
+        u._error = '';
+        this.avisoGlobal = '';
+        try {
+          const r = await llamar({ accion: 'borrar', usuario_id: u.id });
+          this.usuarios = this.usuarios.filter(x => x.id !== u.id);
+          this.mercadosDe.delete(u.id);
+          this.borrarU = null;
+          this.avisoGlobal = r.advertencia || `${u.correo} borrado. Su rastro en la auditoría queda marcado como (borrado), con su nombre y correo.`;
+        } catch (e) {
+          u._error = e.message;
+          u._ocupado = false;
+        }
       },
 
       async ejecutar(u, accion) {
@@ -576,7 +610,7 @@ async function iniciar() {
       document.addEventListener('keydown', (ev) => {
         if (ev.key !== 'Escape') return;
         if (this.panel && !document.querySelector('.multi.abierto')) this.cerrarPanel();
-        else { this.confirmar = null; this.tasaEditar = null; this.tasaBorrar = null; }
+        else { this.confirmar = null; this.borrarU = null; this.tasaEditar = null; this.tasaBorrar = null; }
       });
     },
   }).mount('#app');
