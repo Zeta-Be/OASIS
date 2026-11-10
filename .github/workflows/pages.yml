@@ -1,5 +1,6 @@
 # Publica app/ en GitHub Pages en cada push a main.
-# El sitio queda en https://zeta-be.github.io/OASIS/ (subcarpeta /OASIS/):
+# El sitio queda en https://zetabe.agency/OASIS/ (subcarpeta /OASIS/; la dirección
+# anterior, https://zeta-be.github.io/OASIS/, redirige sola a esta):
 # todas las rutas dentro de app/ son relativas, nunca desde la raíz.
 # Requiere una vez: Settings → Pages → Source: «GitHub Actions».
 
