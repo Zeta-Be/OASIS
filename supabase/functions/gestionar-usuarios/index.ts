@@ -2,7 +2,7 @@
 // pantalla Usuarios. Solo ADMIN activo; cualquier otro recibe 403.
 //
 // POST { accion, ... } con la sesión del ADMIN:
-//   crear        { correo, nombre, rol, proveedor_id?, mercados?, invitar? }
+//   crear        { correo, nombre, rol, proveedor_id?, mercados?, vistas?, invitar? }
 //                -> { usuario, clave } o, con invitar: true,
 //                   { usuario, clave: null, invitacion: { enviada, error } }
 //                Con invitar, Auth crea el login y manda el correo de invitación
@@ -23,7 +23,7 @@
 //   desactivar   { usuario_id }                                     -> { usuario }
 //   reactivar    { usuario_id }                                     -> { usuario }
 //   nueva_clave  { usuario_id }                                     -> { usuario, clave }
-//   editar       { usuario_id, nombre, rol, proveedor_id?, mercados? }
+//   editar       { usuario_id, nombre, rol, proveedor_id?, mercados?, vistas? }
 //                -> { usuario, mercados, acceso_cambio, sesiones_cerradas }
 //                El correo no se edita. Si cambia el acceso (rol, mercados o
 //                proveedor), fn_admin_editar_usuario cierra en la base las
@@ -128,7 +128,7 @@ async function rpc<T>(sb: SupabaseClient, fn: string, args: Record<string, unkno
 
 async function leerUsuario(sb: SupabaseClient, id: number): Promise<Usuario> {
   const { data, error } = await sb.from("usuarios")
-    .select("id, correo, nombre, rol, proveedor_id, activo, auth_user_id, debe_cambiar_clave")
+    .select("id, correo, nombre, rol, proveedor_id, activo, auth_user_id, debe_cambiar_clave, vistas")
     .eq("id", id).maybeSingle();
   if (error) throw desdePostgres(error);
   if (!data) throw new Rechazo(404, `El usuario ${id} no existe`);
@@ -220,6 +220,7 @@ Deno.serve(async (req) => {
         p_rol: cuerpo.rol ?? null,
         p_proveedor_id: cuerpo.proveedor_id ?? null,
         p_mercados: Array.isArray(cuerpo.mercados) ? cuerpo.mercados : [],
+        p_vistas: Array.isArray(cuerpo.vistas) ? cuerpo.vistas : null,   // vistas adicionales (Cliente: materiales)
       });
       if (cuerpo.invitar === true) {
         // Si el correo no sale, el usuario se queda (sin login): la pantalla
@@ -271,6 +272,7 @@ Deno.serve(async (req) => {
           p_rol: cuerpo.rol ?? null,
           p_proveedor_id: cuerpo.proveedor_id ?? null,
           p_mercados: Array.isArray(cuerpo.mercados) ? cuerpo.mercados : [],
+          p_vistas: Array.isArray(cuerpo.vistas) ? cuerpo.vistas : null,   // null = no tocarlas
         });
       const usuario = await leerUsuario(sb, id);
       return responder({

@@ -11,6 +11,9 @@ const ROLES_EXTERNOS = ['PROVEEDOR', 'AGENCIA'];
 const ROLES_DASHBOARD = ['ADMIN', 'LECTURA', 'ZB', 'CLIENTE'];
 const esExterno = (usuario) => ROLES_EXTERNOS.includes(usuario.rol);
 const esCliente = (usuario) => usuario.rol === 'CLIENTE';
+// Vistas adicionales del usuario (usuarios.vistas). Hoy solo Cliente: 'materiales'.
+// Es comodidad de navegación: la base decide (fn_tengo_vista, v_materiales_cliente).
+const tieneVista = (usuario, vista) => Array.isArray(usuario.vistas) && usuario.vistas.includes(vista);
 
 // Fila de `usuarios` del login actual, o null.
 // RLS solo deja leer la fila propia y solo si el usuario está activo, así que
@@ -21,7 +24,7 @@ async function usuarioActual() {
 
   const { data, error } = await sb
     .from('usuarios')
-    .select('id, correo, nombre, rol, activo, proveedor_id, debe_cambiar_clave')
+    .select('id, correo, nombre, rol, activo, proveedor_id, debe_cambiar_clave, vistas')
     .eq('auth_user_id', session.user.id)
     .maybeSingle();
 
@@ -65,6 +68,16 @@ async function requerirAcceso() {
   return usuario;
 }
 
+// Para Materiales: los internos, como siempre, y el CLIENTE que tiene la vista
+// «materiales» (solo lectura, por v_materiales_cliente). Sin ella, al dashboard.
+async function requerirAccesoMateriales() {
+  const { session, usuario } = await usuarioActual();
+  if (!session || !usuario) return irA('index.html');
+  if (usuario.debe_cambiar_clave || esExterno(usuario)) return irA(paginaDeInicio(usuario));
+  if (esCliente(usuario) && !tieneVista(usuario, 'materiales')) return irA('dashboard.html');
+  return usuario;
+}
+
 // Para el dashboard: ADMIN, LECTURA, ZB y CLIENTE. Sin sesión, al login y de
 // vuelta aquí; un externo, al portal. La protección real está en la base
 // (fn_dashboard_*), esto es comodidad.
@@ -97,15 +110,24 @@ const NAVEGACION = [
   { clave: 'usuarios',   texto: 'Usuarios',   href: 'usuarios.html', solo: 'ADMIN' },
 ];
 
+// Pestañas de cada quien. El Cliente solo tiene Dashboard y, con la vista, Materiales.
+function navegacionDe(usuario) {
+  if (esCliente(usuario)) {
+    return NAVEGACION.filter(n => n.clave === 'dashboard' || (n.clave === 'materiales' && tieneVista(usuario, 'materiales')))
+      .sort((a, b) => (a.clave === 'dashboard' ? -1 : 1) - (b.clave === 'dashboard' ? -1 : 1));
+  }
+  return NAVEGACION.filter(n => (!n.solo || n.solo === usuario.rol) && (!n.roles || n.roles.includes(usuario.rol)));
+}
+
 function pintarBarra(contenedor, usuario, activa) {
-  const nav = NAVEGACION.filter(n => (!n.solo || n.solo === usuario.rol) && (!n.roles || n.roles.includes(usuario.rol))).map(n => {
+  const nav = navegacionDe(usuario).map(n => {
     const clase = n.clave === activa ? ' class="activo"' : '';
     const cuenta = n.clave === 'alertas' ? '<span class="cuenta-alertas mono"></span>' : '';
     return `<a href="${n.href}"${clase}>${n.texto}${cuenta}</a>`;
   }).join('');
 
   contenedor.innerHTML = `
-    <a class="marca" href="compras.html">OASIS<span>.</span></a>
+    <a class="marca" href="${esCliente(usuario) ? 'dashboard.html' : 'compras.html'}">OASIS<span>.</span></a>
     <nav>${nav}</nav>
     <div class="usuario">
       <div>
@@ -115,7 +137,7 @@ function pintarBarra(contenedor, usuario, activa) {
       <button class="salir" type="button">Salir</button>
     </div>`;
   contenedor.querySelector('.nombre').textContent = usuario.nombre;
-  contenedor.querySelector('.rol').textContent = usuario.rol;
+  contenedor.querySelector('.rol').textContent = esCliente(usuario) ? 'CLIENTE · SOLO LECTURA' : usuario.rol;
   contenedor.querySelector('.salir').addEventListener('click', salir);
   actualizarAlertasBarra(leerMercadoActivo());
 }

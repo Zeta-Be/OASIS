@@ -89,3 +89,5 @@
   flex: none;
   accent-color: var(--ink);
 }
+
+.campo label.casilla .casilla-ayuda { font-weight: 400; color: var(--muted); }

@@ -1,6 +1,10 @@
 // Pantalla de Materiales: una fila por material, equivale a la hoja Tracking del Sheets.
 // Lo existente se edita en la tabla; lo nuevo se crea en el panel lateral, que
 // también resuelve la partición cuando un material excede su compra (tramos.js).
+//
+// El Cliente con la vista «materiales» entra aquí en solo lectura: sus filas no
+// salen de las tablas (no las puede leer) sino de v_materiales_cliente, que no
+// trae nada financiero. Para él no hay costos, ni alta, ni edición.
 
 const COLUMNAS_MATERIAL = [
   'id', 'compra_id', 'secuencia', 'sub_campana_id', 'referencia', 'enlace',
@@ -15,6 +19,13 @@ const COLUMNAS_COMPRA_M = [
 // Lo que se edita en la fila. Las fechas se guardan juntas (la base exige el par).
 const EDITABLES = ['sub_campana_id', 'referencia', 'enlace', 'reporte_implementacion', 'fecha_inicio', 'fecha_fin'];
 const FECHAS = ['fecha_inicio', 'fecha_fin'];
+
+// Lo que el Cliente lee de v_materiales_cliente (todas sus columnas).
+const COLUMNAS_CLIENTE = [
+  'id', 'codigo', 'mercado_id', 'mercado', 'mercado_nombre', 'compra_id', 'compra', 'secuencia',
+  'proveedor', 'formato', 'ubicacion', 'ciudad', 'tipo_costo', 'sub_campana', 'referencia',
+  'fecha_inicio', 'fecha_fin', 'enlace', 'reporte_implementacion', 'grupo_tramo', 'taxonomia',
+].join(', ');
 
 const SIN_SUB = 0;  // opción "Sin sub campaña" del filtro
 const DIAS_SEMANA = ['D', 'L', 'M', 'M', 'J', 'V', 'S'];
@@ -71,7 +82,7 @@ function mensajeErrorMaterial(error) {
 // ------------------------------------------------------------------ App
 
 async function iniciar() {
-  const usuario = await requerirAcceso();
+  const usuario = await requerirAccesoMateriales();
   pintarBarra(document.getElementById('barra'), usuario, 'materiales');
 
   createApp({
@@ -81,6 +92,7 @@ async function iniciar() {
       ENUMS,
       catalogoCosto: [],       // tipos_costo, con sus mercados
       usuario,
+      esCliente: esCliente(usuario),   // solo lectura por v_materiales_cliente, sin costos
       cargando: true,
       errorCarga: '',
       avisoPedido: '',
@@ -103,7 +115,7 @@ async function iniciar() {
     }),
 
     computed: {
-      soloLectura() { return this.usuario.rol === 'LECTURA'; },
+      soloLectura() { return this.usuario.rol === 'LECTURA' || this.esCliente; },
 
       misMercados() { return this.mercados.filter(m => this.misMercadoIds.includes(m.id)); },
       mercadosPorId() { return new Map(this.mercados.map(m => [m.id, m])); },
@@ -142,6 +154,11 @@ async function iniciar() {
       },
       opcionesMes() { return this.meses.map(m => ({ valor: m, etiqueta: this.nombreMes(m) })); },
       opcionesTipoCosto() {
+        if (this.esCliente) {   // no lee el catálogo: los tipos que traen sus materiales
+          const tipos = new Set(this.compras.filter(c => c.tipo_costo && (!this.filtros.mercado || c.mercado_id === this.filtros.mercado))
+            .map(c => c.tipo_costo));
+          return [...tipos].sort().map(t => ({ valor: t, etiqueta: t }));
+        }
         const m = this.mercadosPorId.get(this.filtros.mercado);
         return tiposCostoPara(this.catalogoCosto, m && m.codigo).map(t => ({ valor: t, etiqueta: t }));
       },
@@ -366,6 +383,10 @@ async function iniciar() {
       nombreMes(k) { const [y, m] = k.split('-'); return `${MESES[Number(m) - 1]} ${y}`; },
       fechaCorta(iso) { if (!iso) return ''; const [y, m, d] = iso.split('-'); return `${d}/${m}/${y}`; },
       periodoCompra(c) { return c && c.fecha_inicio ? `${this.fechaCorta(c.fecha_inicio)} – ${this.fechaCorta(c.fecha_fin)}` : 'sin periodo'; },
+      // Ayuda de la celda Compra. El Cliente no ve el periodo de la compra.
+      tituloCompra(c) {
+        return this.esCliente ? `${c.codigo} · ${c.ubicacion}` : `${c.codigo} · ${c.ubicacion} · ${this.periodoCompra(c)}`;
+      },
       codigoMercado(id) { const m = this.mercadosPorId.get(id); return m ? m.codigo : '?'; },
       nombreProveedor(id) { const p = this.proveedoresPorId.get(id); return p ? p.nombre : ''; },
       nombreSub(id) { const s = this.subPorId.get(id); return s ? s.nombre_unico : ''; },
@@ -393,6 +414,7 @@ async function iniciar() {
       },
 
       validarFila(r) {
+        if (this.esCliente) return {};   // no captura: no hay nada que validar
         const c = this.comprasPorId.get(r.compra_id);
         const e = erroresFechas(r.fecha_inicio, r.fecha_fin, c, false);
         if (r.sub_campana_id && c && !this.subValida(c.mercado_id, r.sub_campana_id)) {
@@ -698,6 +720,7 @@ async function iniciar() {
       // Costo del día de cada material y de cada compra, desde v_inversion_diaria
       // (por fn_inversion_diaria: leída directo, con RLS pasa el límite de 8 s).
       async cargarCostos(mes) {
+        if (this.esCliente) return;   // el Cliente no ve costos: calendario sin ellos
         if (!mes || this.costos[mes]) return;
         const gen = this.genCostos;
         const entrada = { cargando: true, material: new Map(), compra: new Map(), error: '' };
@@ -747,6 +770,7 @@ async function iniciar() {
           `${n} ${n === 1 ? 'material activo' : 'materiales activos'} en la compra ${c.codigo}`,
         ];
         const k = this.costosMes;
+        if (this.esCliente) { this.globo = { ...pos, lineas }; return; }
         if (!k || k.cargando) lineas.push('Cargando costo…');
         else if (k.error) lineas.push(k.error);
         else {
@@ -783,7 +807,64 @@ async function iniciar() {
         this.filas.sort(cmp);
       },
 
+      // El Cliente: todo sale de v_materiales_cliente (y sus evidencias). Con esas
+      // filas se arman los mercados, proveedores, sub campañas y compras que usa
+      // la pantalla, con ids propios de esta página donde la vista da solo nombres.
+      async cargarCliente() {
+        try {
+          const [vista, evidencias] = await Promise.all([
+            traerTodo(() => sb.from('v_materiales_cliente').select(COLUMNAS_CLIENTE).order('id')),
+            cargarEvidencias(),
+          ]);
+          const mercados = new Map(), proveedores = new Map(), subs = new Map(), compras = new Map();
+          const filas = [];
+          for (const f of vista) {
+            if (!mercados.has(f.mercado_id)) {
+              mercados.set(f.mercado_id, { id: f.mercado_id, codigo: f.mercado, nombre: f.mercado_nombre, moneda: null });
+            }
+            const kp = `${f.mercado_id}|${f.proveedor}`;
+            if (f.proveedor && !proveedores.has(kp)) {
+              proveedores.set(kp, { id: proveedores.size + 1, mercado_id: f.mercado_id, nombre: f.proveedor });
+            }
+            const ks = `${f.mercado_id}|${f.sub_campana}`;
+            if (f.sub_campana && !subs.has(ks)) {
+              subs.set(ks, { id: subs.size + 1, mercado_id: f.mercado_id, mercado: f.mercado, nombre_unico: f.sub_campana, activo: true });
+            }
+            if (!compras.has(f.compra_id)) {
+              compras.set(f.compra_id, {
+                id: f.compra_id, mercado_id: f.mercado_id, codigo: f.compra,
+                proveedor_id: f.proveedor ? proveedores.get(kp).id : null,
+                tipo_costo: f.tipo_costo, formato: f.formato, ubicacion: f.ubicacion || '', ciudad: f.ciudad,
+                fecha_inicio: null, fecha_fin: null,   // el periodo de la compra no es del Cliente
+              });
+            }
+            filas.push(desdeBaseMaterial({
+              id: f.id, compra_id: f.compra_id, secuencia: f.secuencia,
+              sub_campana_id: f.sub_campana ? subs.get(ks).id : null,
+              referencia: f.referencia, enlace: f.enlace, reporte_implementacion: f.reporte_implementacion,
+              fecha_inicio: f.fecha_inicio, fecha_fin: f.fecha_fin, grupo_tramo: f.grupo_tramo,
+            }, f.taxonomia));
+          }
+          const porNombre = (a, b) => (a.nombre || a.nombre_unico).localeCompare(b.nombre || b.nombre_unico);
+          this.mercados = [...mercados.values()].sort((a, b) => a.id - b.id);
+          this.misMercadoIds = this.mercados.map(m => m.id);
+          this.proveedores = [...proveedores.values()].sort(porNombre);
+          this.subCampanas = [...subs.values()].sort(porNombre);
+          this.compras = [...compras.values()];
+          this.evidencias = evidencias;
+          this.filas = filas;
+          this.ordenarFilas();
+          this.filtros.mercado = mercadoInicial(this.misMercados, []);
+        } catch (e) {
+          console.error(e);
+          this.errorCarga = 'No se pudieron cargar los materiales: ' + (e.message || e);
+        } finally {
+          this.cargando = false;
+        }
+      },
+
       async cargar() {
+        if (this.esCliente) return this.cargarCliente();
         try {
           const [mercados, mis, propios, proveedores, subs, compras, materiales, taxonomias, evidencias, catalogos] = await Promise.all([
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre, moneda').order('id')),

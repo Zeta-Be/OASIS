@@ -355,6 +355,36 @@ def invitacion(cur, token_admin, token_u, admin_id, usuario_con_clave_id, mco):
     estado, r = funcion(token_admin, accion="reenviar_invitacion", usuario_id=invitado_id)
     anotar(estado == 400, f"Ya con contraseña propia no se le reinvita: {estado}")
 
+    # ---- vistas adicionales del Cliente (sql/cliente_vistas.sql): el invitado es Cliente de MCO
+    ver = lambda: http("GET", f"{URL}/rest/v1/v_materiales_cliente?select=id,mercado&limit=3",
+                       token=entrar(CORREO_INVITADO, clave_i)[0])
+    estado, r = ver()
+    anotar(estado == 200 and r == [], f"Cliente sin la vista «materiales»: {len(r or [])} materiales (esperado 0)")
+    base = dict(usuario_id=invitado_id, nombre="Prueba invitado", rol="CLIENTE", mercados=[mco])
+    estado, r = funcion(token_admin, accion="editar", vistas=["materiales"], **base)
+    anotar(estado == 200 and r["usuario"].get("vistas") == ["materiales"] and r.get("acceso_cambio") is True
+           and (r.get("sesiones_cerradas") or 0) >= 1,
+           f"editar habilita la vista: {estado}, vistas {(r or {}).get('usuario', {}).get('vistas')}, "
+           f"{(r or {}).get('sesiones_cerradas')} sesiones cerradas")
+    estado, r = ver()
+    anotar(estado == 200 and len(r) == 3 and {x["mercado"] for x in r} == {"MCO"},
+           f"Con la vista ve materiales, solo de MCO: {len(r or [])} de 3 pedidos")
+    estado, r = funcion(token_admin, accion="editar", **{**base, "nombre": "Prueba invitado 2"})
+    anotar(estado == 200 and r["usuario"].get("vistas") == ["materiales"] and r.get("acceso_cambio") is False,
+           "editar sin mandar vistas las conserva y no cierra sesiones")
+    estado, r = funcion(token_admin, accion="editar", vistas=["inversion"], **base)
+    anotar(estado == 400, f"editar rechaza una vista que no existe: {estado} — {(r or {}).get('error')}")
+    estado, r = funcion(token_admin, accion="crear", correo=f"x6.{SUFIJO}@example.com", nombre="X", rol="ZB",
+                        mercados=[mco], vistas=["materiales"])
+    anotar(estado == 400, f"crear rechaza vistas en un Equipo ZB: {estado} — {(r or {}).get('error')}")
+    estado, r = funcion(token_admin, accion="editar", vistas=[], **base)
+    estado2, r2 = ver()
+    anotar(estado == 200 and r["usuario"].get("vistas") == [] and r2 == [], "editar quita la vista y deja de ver materiales")
+    cur.execute("""SELECT valor_anterior, valor_nuevo FROM auditoria
+                   WHERE tabla = 'usuarios' AND fila_id = %s AND campo = 'vistas' AND usuario_id = %s ORDER BY id""",
+                (invitado_id, admin_id))
+    anotar(cur.fetchall() == [("[]", '["materiales"]'), ('["materiales"]', "[]")], "Auditoría del campo vistas con el ADMIN, antes y después")
+
     # Usuario antiguo: activo, sin login y sin la marca (como los pilotos). Se le puede invitar.
     cur.execute("INSERT INTO usuarios (correo, nombre, rol, activo) VALUES (%s, 'Prueba sin login', 'LECTURA', true) RETURNING id",
                 (CORREO_SIN_LOGIN,))
