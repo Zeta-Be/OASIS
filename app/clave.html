@@ -7,13 +7,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sofia+Sans+Extra+Condensed:wght@700;800&family=Mulish:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="css/oasis.css">
+  <style>[hidden] { display: none !important; }</style>
 </head>
 <body>
   <div class="login">
     <section class="lado-marca">
       <div>
         <div class="marca">OASIS<span>.</span></div>
-        <p class="frase">Tu contraseña es temporal. Antes de seguir, elige una que solo tú conozcas.</p>
+        <p class="frase" id="frase">Tu contraseña es temporal. Antes de seguir, elige una que solo tú conozcas.</p>
       </div>
       <div class="pie">ZETAB · V2.0</div>
     </section>
@@ -21,10 +22,17 @@
     <section class="lado-form">
       <div class="caja">
         <div class="eyebrow" id="quien">Cambio de contraseña</div>
-        <h1 class="titulo">Nueva contraseña</h1>
+        <h1 class="titulo" id="titulo">Nueva contraseña</h1>
+
+        <!-- Enlace de invitación con token (?token_hash=…): se canjea al hacer clic,
+             no al abrir, para que un escáner de correo no lo gaste. -->
+        <div id="paso-continuar" hidden>
+          <p class="ayuda">Te invitaron a OASIS. Continúa para crear tu contraseña.</p>
+          <button class="btn p ancho" type="button" id="btn-continuar" style="margin-top:18px">Continuar</button>
+        </div>
 
         <form id="form-nueva" hidden novalidate>
-          <p class="ayuda">Mínimo 10 caracteres. No la compartas: el administrador no la conoce.</p>
+          <p class="ayuda" id="ayuda">Mínimo 10 caracteres. No la compartas: el administrador no la conoce.</p>
           <div class="campo">
             <label for="nueva">Nueva contraseña</label>
             <input id="nueva" type="password" autocomplete="new-password" required minlength="10">
@@ -40,10 +48,16 @@
         </form>
 
         <div id="mensaje" class="alerta" hidden style="margin-top:14px"></div>
+        <div class="acciones" id="ir-inicio" hidden>
+          <a class="btn" href="index.html">Ir al inicio</a>
+        </div>
       </div>
     </section>
   </div>
 
+  <!-- Cómo se llegó (enlace de invitación, error de enlace vencido): se guarda
+       antes de que el cliente de Supabase lea y limpie la dirección. -->
+  <script>window.OASIS_LLEGADA = { hash: window.location.hash, search: window.location.search };</script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js"></script>
   <script src="js/comun.js"></script>

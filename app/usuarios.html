@@ -78,7 +78,7 @@
               <td class="calc"><span class="pill" :class="u.activo ? 'ok' : 'err'">{{ u.activo ? 'activo' : 'inactivo' }}</span></td>
               <td class="calc">
                 {{ u.auth_user_id ? 'sí' : 'no' }}
-                <span v-if="u.debe_cambiar_clave" class="pill prop" title="Entra con una contraseña temporal y tiene que cambiarla">clave temporal</span>
+                <span v-if="u.debe_cambiar_clave" class="pill prop" title="Todavía no ha creado su contraseña: tiene una invitación o una contraseña temporal pendiente">sin contraseña propia</span>
               </td>
               <td class="estado-col">
                 <div class="acciones-fila">
@@ -105,6 +105,9 @@
                             @click="pedir(u, 'reactivar')">Reactivar</button>
                     <button type="button" class="mini" :disabled="u._ocupado"
                             @click="pedir(u, 'nueva_clave')">{{ u.auth_user_id ? 'Nueva contraseña' : 'Crear login' }}</button>
+                    <button v-if="u.activo && u.debe_cambiar_clave" type="button" class="mini" :disabled="u._ocupado"
+                            title="Le manda un correo con el enlace para crear su contraseña (vale 24 horas)"
+                            @click="pedir(u, 'reenviar_invitacion')">{{ u.auth_user_id ? 'Reenviar invitación' : 'Enviar invitación' }}</button>
                     <button v-if="!u.activo" type="button" class="mini peligro" :disabled="u._ocupado"
                             @click="pedirBorrar(u)">Borrar</button>
                   </template>
@@ -256,8 +259,8 @@
         <aside class="panel" role="dialog" aria-labelledby="panel-titulo">
           <header class="panel-cab">
             <div>
-              <div class="eyebrow">{{ panel.clave || panel.modo === 'editar' ? panel.correo : 'Alta con login y contraseña temporal' }}</div>
-              <h2 id="panel-titulo">{{ panel.clave ? panel.titulo : panel.modo === 'editar' ? 'Editar usuario' : 'Nuevo usuario' }}</h2>
+              <div class="eyebrow">{{ panelResultado || panel.modo === 'editar' ? panel.correo : 'Alta con invitación por correo o contraseña temporal' }}</div>
+              <h2 id="panel-titulo">{{ panelResultado ? panel.titulo : panel.modo === 'editar' ? 'Editar usuario' : 'Nuevo usuario' }}</h2>
             </div>
             <button type="button" class="cerrar" title="Cerrar (Esc)" @click="cerrarPanel">×</button>
           </header>
@@ -273,6 +276,22 @@
               <div class="alerta aviso" style="margin-top:12px">
                 <strong>Envíala por un canal privado.</strong> No se vuelve a mostrar: si se pierde, genera otra.
                 Al entrar, {{ panel.nombre }} tendrá que cambiarla.
+              </div>
+            </div>
+          </div>
+
+          <!-- La invitación: enviada, o no enviada con la salida de la contraseña temporal -->
+          <div v-else-if="panel.invitacion" class="panel-cuerpo clave-cuerpo">
+            <div class="ancho-2">
+              <div v-if="panel.invitacion.enviada" class="alerta ok">
+                <strong>Invitación enviada a {{ panel.correo }}.</strong>
+                {{ panel.nombre }} recibe un correo con el enlace para crear su contraseña. El enlace vale 24 horas
+                y sirve una sola vez; si se vence, usa «Reenviar invitación» en su fila.
+              </div>
+              <div v-else class="alerta aviso">
+                <strong>El usuario quedó creado, pero la invitación no se envió.</strong>
+                {{ panel.invitacion.error }}
+                Puedes reenviarla después desde su fila o darle ya una contraseña temporal.
               </div>
             </div>
           </div>
@@ -332,11 +351,23 @@
                                   texto-vacio="Ninguno: elige al menos uno" texto-limpiar="Quitar todos"></seleccion-multiple>
               <div class="campo-error" v-if="errPanel('mercados')">{{ errPanel('mercados') }}</div>
             </div>
+
+            <div v-if="panel.modo === 'nuevo'" class="campo ancho-2">
+              <label class="casilla" for="p-invitar">
+                <input id="p-invitar" type="checkbox" v-model="panel.invitar">
+                Enviar invitación por correo
+              </label>
+              <div class="campo-pista">
+                {{ panel.invitar
+                  ? 'Recibe un correo con un enlace para crear su contraseña (vale 24 horas).'
+                  : 'Sin correo: se genera una contraseña temporal que se muestra una sola vez, para enviársela por un canal privado.' }}
+              </div>
+            </div>
           </form>
 
           <footer class="panel-pie">
             <div v-if="panel.error" class="alerta error">{{ panel.error }}</div>
-            <div v-else-if="!panel.clave && panel.intento && hayErrores" class="alerta error">Revisa los campos marcados.</div>
+            <div v-else-if="!panelResultado && panel.intento && hayErrores" class="alerta error">Revisa los campos marcados.</div>
             <div v-else-if="cambiosAcceso.length" class="alerta aviso">
               <strong>Cambia su acceso</strong> ({{ cambiosAcceso.join(' · ') }}).
               Al guardar se cierran sus sesiones abiertas: tendrá que volver a entrar y verá lo nuevo.
@@ -344,6 +375,11 @@
             <div class="botones">
               <template v-if="panel.clave">
                 <button type="button" class="btn p" @click="cerrarPanel">Listo</button>
+              </template>
+              <template v-else-if="panel.invitacion">
+                <button v-if="!panel.invitacion.enviada" type="button" class="btn" :disabled="panel.guardando"
+                        @click="claveTrasInvitacion">{{ panel.guardando ? 'Generando…' : 'Generar contraseña temporal' }}</button>
+                <button type="button" class="btn p" :disabled="panel.guardando" @click="cerrarPanel">Listo</button>
               </template>
               <template v-else-if="panel.modo === 'editar'">
                 <button type="button" class="btn" :disabled="panel.guardando" @click="cerrarPanel">Cancelar</button>
@@ -354,7 +390,7 @@
               <template v-else>
                 <button type="button" class="btn" :disabled="panel.guardando" @click="cerrarPanel">Cancelar</button>
                 <button type="submit" form="form-usuario" class="btn p" :disabled="panel.guardando">
-                  {{ panel.guardando ? 'Creando…' : 'Crear usuario y login' }}
+                  {{ panel.guardando ? 'Creando…' : panel.invitar ? 'Crear usuario e invitar' : 'Crear usuario y login' }}
                 </button>
               </template>
             </div>

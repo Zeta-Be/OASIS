@@ -14,6 +14,15 @@ la pantalla Usuarios.
    editar (mercados, nombre, rol; reglas; cierre de sesiones) y borrar (solo
    desactivados; fila, mercados y login fuera; auditoría marcada «(borrado)»).
    Necesita también sql/usuarios_edicion.sql y sql/usuarios_borrar.sql aplicados.
+   Invitación por correo (sql/usuarios_invitacion.sql): crear con invitación,
+   login en Auth sin contraseña y vinculado, contraseña temporal como
+   alternativa, reenvío (login recreado), auditoría de cada envío y el canje
+   del enlace como lo hace clave.html (token_hash leído de la base, sin
+   imprimirlo): una sola vez, crear la contraseña y entrar. OJO: esta parte manda dos correos
+   reales por el SMTP de Supabase. Van a un alias del buzón de OASIS
+   (oasis.zetabe+prueba.…@gmail.com) para que no reboten; otro destino:
+   OASIS_CORREO_INVITACION=alguien@dominio.com. Abrir el enlace del correo y
+   crear la contraseña se prueba a mano.
 3. Comprueba que un no-ADMIN recibe 403 y que la auditoría registra al ADMIN.
 4. Busca la llave secreta en el repositorio (git grep, también en el historial).
 5. Borra todo lo que creó, aunque algo falle: logins, usuarios y su auditoría.
@@ -39,6 +48,8 @@ FUNCION = f"{URL}/functions/v1/gestionar-usuarios"
 SUFIJO = secrets.token_hex(4)
 CORREO_ADMIN = f"oasis.prueba.admin.{SUFIJO}@example.com"
 CORREO_USUARIO = f"oasis.prueba.usuario.{SUFIJO}@example.com"
+# El invitado recibe correos de verdad: un alias (+) del buzón remitente, que no rebota.
+CORREO_INVITADO = os.environ.get("OASIS_CORREO_INVITACION", f"oasis.zetabe+prueba.{SUFIJO}@gmail.com").lower()
 
 informe = []
 
@@ -102,7 +113,7 @@ def preparar_admin(cur, clave):
 
 def limpiar(cur):
     """Borra lo que creó la prueba, por correo: sirve aunque haya fallado a medias."""
-    correos = (CORREO_ADMIN, CORREO_USUARIO)
+    correos = (CORREO_ADMIN, CORREO_USUARIO, CORREO_INVITADO)
     cur.execute("SELECT id FROM usuarios WHERE correo IN %s", (correos,))
     ids = [r[0] for r in cur.fetchall()]
     cur.execute("DELETE FROM auth.users WHERE email IN %s", (correos,))
@@ -245,11 +256,103 @@ def flujo(cur):
                     (usuario_id, usuario_id))
         anotar(cur.fetchone()[0] == 1, "Auditoría del cambio de contraseña con el propio usuario")
 
+        # ---- invitación por correo (sql/usuarios_invitacion.sql)
+        invitacion(cur, token_admin, token_u, admin_id, usuario_id, mco)
+
         # ---- editar (sql/usuarios_edicion.sql)
         editar(cur, token_admin, token_u, admin_id, usuario_id, mco, clave3, (sesion_u or {}).get("refresh_token"))
 
         # ---- borrar (sql/usuarios_borrar.sql)
         borrar(cur, token_admin, admin_id, usuario_id, clave3)
+
+
+def login_de(cur, correo):
+    """(id, invitado, confirmado, con_clave) del login en Auth, o None."""
+    cur.execute("""SELECT id::text, invited_at IS NOT NULL, email_confirmed_at IS NOT NULL,
+                          coalesce(encrypted_password, '') <> ''
+                   FROM auth.users WHERE email = %s""", (correo,))
+    return cur.fetchone()
+
+
+def invitacion(cur, token_admin, token_u, admin_id, usuario_con_clave_id, mco):
+    """crear con invitar, reenviar_invitacion, auditoría de cada envío y la temporal como alternativa."""
+    estado, r = funcion(token_admin, accion="crear", correo=CORREO_INVITADO, nombre="Prueba invitado",
+                        rol="CLIENTE", mercados=[mco], invitar=True)
+    inv = (r or {}).get("invitacion") or {}
+    ok = estado == 200 and inv.get("enviada") is True and r.get("clave") is None
+    anotar(ok, f"Crea usuario Cliente con invitación por correo: {estado} — {inv or (r or {}).get('error')}")
+    if estado != 200 or not (r or {}).get("usuario"):
+        return
+    invitado_id = r["usuario"]["id"]
+    anotar(r["usuario"].get("debe_cambiar_clave") is True and bool(r["usuario"].get("auth_user_id")),
+           "El invitado queda con login vinculado y pendiente de crear su contraseña")
+
+    login = login_de(cur, CORREO_INVITADO)
+    anotar(bool(login) and login[1] and not login[2] and not login[3],
+           f"En Auth: login invitado, sin confirmar y sin contraseña — {login and login[1:]}")
+    cur.execute("SELECT rol::text, auth_user_id::text, (SELECT array_agg(mercado_id) FROM usuario_mercados WHERE usuario_id = u.id) "
+                "FROM usuarios u WHERE id = %s", (invitado_id,))
+    fila = cur.fetchone()
+    anotar(bool(login) and fila == ("CLIENTE", login[0], [mco]), "En usuarios: rol Cliente, su mercado MCO y el mismo login de Auth")
+
+    # Reglas: un no-ADMIN no reenvía; a quien ya creó su contraseña no se le reinvita.
+    estado, _ = funcion(token_u, accion="reenviar_invitacion", usuario_id=invitado_id)
+    anotar(estado == 403, f"No-ADMIN intenta reenviar_invitacion: {estado} (esperado 403)")
+    estado, r = funcion(token_admin, accion="reenviar_invitacion", usuario_id=usuario_con_clave_id)
+    anotar(estado == 400, f"No reinvita a quien ya creó su contraseña: {estado} — {(r or {}).get('error')}")
+    estado, _ = http("POST", f"{URL}/rest/v1/rpc/fn_admin_registrar_invitacion",
+                     {"p_usuario_id": invitado_id, "p_enviada": True}, token=token_u)
+    anotar(estado in (401, 403), f"No-ADMIN llama directo a fn_admin_registrar_invitacion: {estado} (esperado 403)")
+
+    # La alternativa: contraseña temporal a un invitado que nunca abrió el enlace.
+    estado, r = funcion(token_admin, accion="nueva_clave", usuario_id=invitado_id)
+    temporal = (r or {}).get("clave")
+    token_i, estado_i, _ = entrar(CORREO_INVITADO, temporal) if temporal else (None, None, None)
+    anotar(estado == 200 and bool(token_i), f"Contraseña temporal para un invitado: {estado}; entra con ella: {estado_i}")
+
+    # Reenviar: login nuevo (el enlace viejo y la temporal mueren con el anterior), otra vez vinculado.
+    estado, r = funcion(token_admin, accion="reenviar_invitacion", usuario_id=invitado_id)
+    inv = (r or {}).get("invitacion") or {}
+    anotar(estado == 200 and inv.get("enviada") is True, f"reenviar_invitacion: {estado} — {inv or (r or {}).get('error')}")
+    login2 = login_de(cur, CORREO_INVITADO)
+    anotar(bool(login and login2) and login2[0] != login[0] and login2[1] and not login2[3]
+           and (r or {}).get("usuario", {}).get("auth_user_id") == login2[0],
+           "El reenvío deja un login nuevo, invitado, sin contraseña y vinculado al mismo usuario")
+
+    # Auditoría: cada envío con el ADMIN, a quién y el resultado.
+    cur.execute("""SELECT valor_nuevo FROM auditoria
+                   WHERE tabla = 'usuarios' AND fila_id = %s AND campo = '(invitación)' AND usuario_id = %s ORDER BY id""",
+                (invitado_id, admin_id))
+    envios = [f[0] for f in cur.fetchall()]
+    anotar(envios == [f"enviada a {CORREO_INVITADO}"] * 2, f"Auditoría: dos envíos con el ADMIN — {envios}")
+    cur.execute("""SELECT valor_nuevo FROM auditoria
+                   WHERE tabla = 'usuarios' AND fila_id = %s AND campo = '(login)' AND usuario_id = %s""",
+                (invitado_id, admin_id))
+    anotar([f[0] for f in cur.fetchall()] == ["login recreado por reenvío de invitación"],
+           "Auditoría: «login recreado por reenvío de invitación», una vez, con el ADMIN")
+    anotar(not (temporal and entrar(CORREO_INVITADO, temporal)[0]), "La temporal anterior murió con el login viejo")
+
+    # El enlace del correo, como lo canjea clave.html al hacer clic en «Continuar»:
+    # {{ .TokenHash }} es lo que Auth guarda en confirmation_token. No se imprime.
+    cur.execute("SELECT confirmation_token FROM auth.users WHERE email = %s", (CORREO_INVITADO,))
+    token_hash = (cur.fetchone() or [None])[0]
+    estado, r = http("POST", f"{URL}/auth/v1/verify", {"type": "invite", "token_hash": token_hash})
+    token_i = (r or {}).get("access_token")
+    anotar(estado == 200 and bool(token_i), f"«Continuar» canjea el enlace por una sesión: {estado}")
+    estado, r = http("GET", f"{URL}/rest/v1/usuarios?select=rol,debe_cambiar_clave", token=token_i)
+    anotar(estado == 200 and r == [{"rol": "CLIENTE", "debe_cambiar_clave": True}],
+           f"El invitado lee su fila (rol y marca: lo que clave.html usa para pedir la contraseña y redirigir): {r}")
+    estado, r = http("POST", f"{URL}/auth/v1/verify", {"type": "invite", "token_hash": token_hash})
+    anotar(estado >= 400, f"El enlace sirve una sola vez: el segundo canje da {estado}")
+    clave_i = secrets.token_urlsafe(16) + "cC3$"
+    estado, _ = http("PUT", f"{URL}/auth/v1/user", {"password": clave_i}, token=token_i)
+    estado2, _ = http("POST", f"{URL}/rest/v1/rpc/fn_clave_cambiada", {}, token=token_i)
+    cur.execute("SELECT debe_cambiar_clave FROM usuarios WHERE id = %s", (invitado_id,))
+    anotar(estado == 200 and estado2 in (200, 204) and cur.fetchone()[0] is False,
+           f"El invitado crea su contraseña ({estado}) y la marca se apaga")
+    anotar(bool(entrar(CORREO_INVITADO, clave_i)[0]), "El invitado entra con su contraseña")
+    estado, r = funcion(token_admin, accion="reenviar_invitacion", usuario_id=invitado_id)
+    anotar(estado == 400, f"Ya con contraseña propia no se le reinvita: {estado}")
 
 
 def editar(cur, token_admin, token_u, admin_id, usuario_id, mco, clave_u, refresh_u):
@@ -382,7 +485,7 @@ def main():
         anotar(not hallazgos, "git grep: ninguna llave secreta (sb_secret_ ni JWT service_role) en archivos ni historial"
                + (f" — {hallazgos}" if hallazgos else ""))
         logins, usuarios, auditoria = limpiar(cur)
-        correos = (CORREO_ADMIN, CORREO_USUARIO)
+        correos = (CORREO_ADMIN, CORREO_USUARIO, CORREO_INVITADO)
         cur.execute("SELECT (SELECT count(*) FROM usuarios WHERE correo IN %s) + (SELECT count(*) FROM auth.users WHERE email IN %s)",
                     (correos, correos))
         quedan = cur.fetchone()[0]

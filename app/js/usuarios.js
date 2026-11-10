@@ -1,5 +1,6 @@
-// Pantalla Usuarios: solo ADMIN. Lista quién tiene acceso y da de alta, edita,
-// desactiva, reactiva o genera contraseñas temporales. Abajo, las tasas de cambio.
+// Pantalla Usuarios: solo ADMIN. Lista quién tiene acceso y da de alta (con
+// invitación por correo o contraseña temporal), edita, desactiva, reactiva,
+// reenvía invitaciones o genera contraseñas temporales. Abajo, las tasas de cambio.
 // Todo cambio de usuarios pasa por la Edge Function gestionar-usuarios: ella tiene
 // la llave secreta para Auth (crear y bloquear logins); esta página nunca la ve.
 // Leer es directo: un ADMIN lee usuarios y usuario_mercados por RLS.
@@ -111,7 +112,7 @@ async function iniciar() {
       confirmar: null,         // { id, accion, pregunta }
       borrarU: null,           // { id, escrito }: confirmación de borrado, escribiendo el correo
       avisoGlobal: '',         // resultado de un borrado (o su advertencia)
-      panel: null,             // { modo: 'nuevo' | 'editar', ... } o { clave, ... }
+      panel: null,             // { modo: 'nuevo' | 'editar', ... }, { clave, ... } o { invitacion, ... }
       copiada: false,
       // Tasas de cambio (sql/dashboard.sql): moneda local por 1 USD, para la vista LATAM del dashboard.
       tasas: [],
@@ -134,6 +135,8 @@ async function iniciar() {
                                             && (x.activo || x.id === (p.original || {}).proveedor_id));
       },
       adminsActivos() { return this.usuarios.filter(u => u.rol === 'ADMIN' && u.activo).length; },
+      // El panel muestra un resultado (contraseña temporal o invitación), no el formulario.
+      panelResultado() { return !!this.panel && !!(this.panel.clave || this.panel.invitacion); },
 
       visibles() {
         const q = this.filtros.buscar.trim().toLowerCase();
@@ -157,7 +160,7 @@ async function iniciar() {
       esYo() { return !!(this.panel && this.panel.modo === 'editar' && this.panel.id === this.yo.id); },
       erroresPanel() {
         const p = this.panel;
-        if (!p || p.clave) return {};
+        if (!p || p.clave || p.invitacion) return {};
         const e = {};
         if (p.modo === 'nuevo') {
           const correo = p.correo.trim().toLowerCase();
@@ -263,6 +266,9 @@ async function iniciar() {
           nueva_clave: u.auth_user_id
             ? `¿Nueva contraseña temporal para ${u.nombre}? La actual deja de servir.`
             : `¿Crear el login de ${u.nombre} con una contraseña temporal?`,
+          reenviar_invitacion: u.auth_user_id
+            ? `¿Enviar una invitación nueva a ${u.correo}? El enlace o la contraseña temporal anteriores dejan de servir.`
+            : `¿Enviar la invitación a ${u.correo}?`,
         };
         u._error = '';
         u._aviso = '';
@@ -308,7 +314,13 @@ async function iniciar() {
           const r = await llamar({ accion, usuario_id: u.id });
           this.reemplazar(r.usuario);
           this.confirmar = null;
-          if (r.clave) {
+          if (r.invitacion) {
+            if (r.invitacion.enviada) {
+              this.reemplazar(r.usuario, `Invitación enviada a ${r.usuario.correo}: el enlace vale 24 horas`);
+            } else {
+              this.mostrarInvitacion(r.usuario, r.invitacion, 'Invitación no enviada');
+            }
+          } else if (r.clave) {
             this.mostrarClave(r.usuario, r.clave,
               accion === 'nueva_clave' && u.auth_user_id ? 'Nueva contraseña' : 'Login creado');
           }
@@ -333,6 +345,7 @@ async function iniciar() {
           modo: 'nuevo', clave: null, correo: '', nombre: '', rol: null,
           mercadoProveedor: (this.mercados.find(m => m.codigo === 'MCO') || this.mercados[0] || {}).id,
           proveedor_id: null, mercados: [], original: null,
+          invitar: true,   // casilla «Enviar invitación por correo»; sin ella, contraseña temporal
           tocados: {}, intento: false, guardando: false, error: '',
         };
         nextTick(() => {
@@ -387,10 +400,12 @@ async function iniciar() {
             rol: p.rol,
             proveedor_id: esProv ? p.proveedor_id : null,
             mercados,
+            invitar: !!p.invitar,
           });
           this.reemplazar(r.usuario);
           this.mercadosDe.set(r.usuario.id, [...mercados]);
-          this.mostrarClave(r.usuario, r.clave, 'Usuario creado');
+          if (r.invitacion) this.mostrarInvitacion(r.usuario, r.invitacion, 'Usuario creado');
+          else this.mostrarClave(r.usuario, r.clave, 'Usuario creado');
         } catch (e) {
           p.error = 'No se creó: ' + e.message;
           p.guardando = false;
@@ -431,6 +446,26 @@ async function iniciar() {
       mostrarClave(usuario, clave, titulo) {
         this.copiada = false;
         this.panel = { clave, titulo, correo: usuario.correo, nombre: usuario.nombre };
+      },
+      // Resultado de una invitación: enviada, o no enviada con la salida de la
+      // contraseña temporal (el usuario ya quedó creado).
+      mostrarInvitacion(usuario, invitacion, titulo) {
+        this.copiada = false;
+        this.panel = { invitacion, titulo, id: usuario.id, correo: usuario.correo, nombre: usuario.nombre, guardando: false, error: '' };
+      },
+      async claveTrasInvitacion() {
+        const p = this.panel;
+        if (!p || !p.invitacion || p.guardando) return;
+        p.guardando = true;
+        p.error = '';
+        try {
+          const r = await llamar({ accion: 'nueva_clave', usuario_id: p.id });
+          this.reemplazar(r.usuario);
+          this.mostrarClave(r.usuario, r.clave, 'Contraseña temporal');
+        } catch (e) {
+          p.error = 'No se generó: ' + e.message;
+          p.guardando = false;
+        }
       },
       async copiar() {
         try {
