@@ -73,15 +73,15 @@
           <div class="kpi-et">Materiales</div>
           <div class="kpi-val mono">{{ fmtEntero(kpis.total) }}</div>
         </div>
-        <div class="kpi">
+        <div v-if="!esCliente" class="kpi">
           <div class="kpi-et">Sin fechas</div>
           <div class="kpi-val mono" :class="{ 'kpi-err': kpis.sinFechas }">{{ fmtEntero(kpis.sinFechas) }}</div>
         </div>
-        <div class="kpi">
+        <div v-if="!esCliente" class="kpi">
           <div class="kpi-et">Sin sub campaña</div>
           <div class="kpi-val mono" :class="{ 'kpi-err': kpis.sinSub }">{{ fmtEntero(kpis.sinSub) }}</div>
         </div>
-        <div class="kpi" title="Materiales con fechas fuera del periodo de su compra. Se resuelven con «Partir →» en la fila.">
+        <div v-if="!esCliente" class="kpi" title="Materiales con fechas fuera del periodo de su compra. Se resuelven con «Partir →» en la fila.">
           <div class="kpi-et">Fuera de su compra</div>
           <div class="kpi-val mono" :class="{ 'kpi-err': kpis.fuera }">{{ fmtEntero(kpis.fuera) }}</div>
         </div>
@@ -118,7 +118,7 @@
               <td class="pegada c0 calc mono" :title="tramosDe(r)">
                 <span v-if="!filtros.mercado" class="mk">{{ codigoMercado(compraDe(r).mercado_id) }}</span>{{ codigoMaterial(r) }}<span v-if="r.grupo_tramo" class="tramo">⇄</span>
               </td>
-              <td class="pegada c1 calc compra-col" :title="`${compraDe(r).codigo} · ${compraDe(r).ubicacion} · ${periodoCompra(compraDe(r))}`">
+              <td class="pegada c1 calc compra-col" :title="tituloCompra(compraDe(r))">
                 <span class="mono">{{ compraDe(r).codigo }}</span> · {{ compraDe(r).ubicacion }}
               </td>
               <td class="calc">{{ nombreProveedor(compraDe(r).proveedor_id) }}</td>
@@ -220,7 +220,7 @@
             <tbody>
               <tr v-for="f in calFilas" :key="f.r._k" :data-k="f.r._k">
                 <td class="pegada c0 calc mono" :title="tramosDe(f.r)">{{ codigoMaterial(f.r) }}<span v-if="f.r.grupo_tramo" class="tramo">⇄</span></td>
-                <td class="pegada c1 calc compra-col" :title="`${compraDe(f.r).ubicacion} · ${periodoCompra(compraDe(f.r))}`">
+                <td class="pegada c1 calc compra-col" :title="tituloCompra(compraDe(f.r))">
                   <span class="mono">{{ compraDe(f.r).codigo }}</span> · {{ compraDe(f.r).ubicacion }}
                 </td>
                 <td v-for="(clase, i) in f.celdas" :key="i" class="dia" :class="clase" :data-dia="calDias[i].iso"></td>

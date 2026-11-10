@@ -352,6 +352,16 @@
               <div class="campo-error" v-if="errPanel('mercados')">{{ errPanel('mercados') }}</div>
             </div>
 
+            <!-- Vistas adicionales: pantallas que se le habilitan además de la suya (hoy, solo Cliente) -->
+            <div v-if="vistasDe(panel.rol).length" class="campo ancho-2">
+              <div class="etiqueta">Vistas adicionales</div>
+              <label v-for="v in vistasDe(panel.rol)" :key="v.valor" class="casilla" :for="'p-vista-' + v.valor">
+                <input :id="'p-vista-' + v.valor" type="checkbox" :value="v.valor" v-model="panel.vistas">
+                {{ v.etiqueta }} <span class="casilla-ayuda">({{ v.ayuda }})</span>
+              </label>
+              <div class="campo-pista">Además del dashboard. Sin tarifas, valores ni costos; solo de sus mercados.</div>
+            </div>
+
             <div v-if="panel.modo === 'nuevo'" class="campo ancho-2">
               <label class="casilla" for="p-invitar">
                 <input id="p-invitar" type="checkbox" v-model="panel.invitar">

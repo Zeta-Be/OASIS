@@ -23,6 +23,16 @@ const ETIQUETA_ROL = { ...Object.fromEntries(ROLES.map(r => [r.valor, r.etiqueta
 const VEN_TODOS = ['ADMIN', 'LECTURA'];
 const usaMercados = (rol) => !!rol && rol !== 'PROVEEDOR' && !VEN_TODOS.includes(rol);
 
+// Vistas adicionales que admite cada rol (igual que fn_vistas_de_rol en la base,
+// sql/cliente_vistas.sql). Para sumar otra: aquí y allá.
+const VISTAS_POR_ROL = {
+  CLIENTE: [{ valor: 'materiales', etiqueta: 'Materiales', ayuda: 'Tracking, solo lectura' }],
+};
+const vistasDe = (rol) => VISTAS_POR_ROL[rol] || [];
+const ETIQUETA_VISTA = Object.fromEntries(Object.values(VISTAS_POR_ROL).flat().map(v => [v.valor, v.etiqueta]));
+// Las vistas elegidas que el rol admite, ordenadas (lo que se manda y se compara).
+const vistasValidas = (rol, vistas) => vistasDe(rol).map(v => v.valor).filter(v => (vistas || []).includes(v)).sort();
+
 // Diferencia con la tasa vigente a partir de la cual se pide confirmar.
 const TOPE_DIFERENCIA = 0.2;
 
@@ -190,6 +200,11 @@ async function iniciar() {
           const n = (id) => (this.proveedoresPorId.get(id) || {}).nombre || '—';
           c.push(`proveedor: ${n(o.proveedor_id)} → ${n(p.proveedor_id)}`);
         }
+        const vAntes = vistasValidas(o.rol, o.vistas), vAhora = vistasValidas(p.rol, p.vistas);
+        if (vAntes.join(',') !== vAhora.join(',')) {
+          const nombres = (vs) => vs.map(v => ETIQUETA_VISTA[v] || v).join(', ') || 'ninguna';
+          c.push(`vistas adicionales: ${nombres(vAntes)} → ${nombres(vAhora)}`);
+        }
         if (usaMercados(p.rol)) {
           const antes = [...o.mercados].sort((a, b) => a - b).join(',');
           const ahora = [...p.mercados].sort((a, b) => a - b).join(',');
@@ -246,6 +261,7 @@ async function iniciar() {
 
     methods: {
       etiquetaRol(r) { return ETIQUETA_ROL[r] || r; },
+      vistasDe,
       codigoMercado(id) { const m = this.mercadosPorId.get(id); return m ? m.codigo : '?'; },
       alcance(u) {
         if (u.rol === 'PROVEEDOR') {
@@ -254,7 +270,9 @@ async function iniciar() {
         }
         if (VEN_TODOS.includes(u.rol)) return 'Todos';
         const ids = this.mercadosDe.get(u.id) || [];
-        return ids.map(id => this.codigoMercado(id)).join(', ') || 'sin mercados';
+        const mercados = ids.map(id => this.codigoMercado(id)).join(', ') || 'sin mercados';
+        const vistas = vistasValidas(u.rol, u.vistas).map(v => ETIQUETA_VISTA[v] || v);
+        return vistas.length ? `${mercados} · + ${vistas.join(', ')}` : mercados;
       },
 
       // ---------------------------------------------------------------- Acciones por fila
@@ -344,7 +362,7 @@ async function iniciar() {
         this.panel = {
           modo: 'nuevo', clave: null, correo: '', nombre: '', rol: null,
           mercadoProveedor: (this.mercados.find(m => m.codigo === 'MCO') || this.mercados[0] || {}).id,
-          proveedor_id: null, mercados: [], original: null,
+          proveedor_id: null, mercados: [], vistas: [], original: null,
           invitar: true,   // casilla «Enviar invitación por correo»; sin ella, contraseña temporal
           tocados: {}, intento: false, guardando: false, error: '',
         };
@@ -363,8 +381,9 @@ async function iniciar() {
           modo: 'editar', clave: null, id: u.id, correo: u.correo, nombre: u.nombre, rol: u.rol,
           mercadoProveedor: prov ? prov.mercado_id
             : (this.mercados.find(m => m.codigo === 'MCO') || this.mercados[0] || {}).id,
-          proveedor_id: u.proveedor_id, mercados,
-          original: { rol: u.rol, nombre: u.nombre, activo: u.activo, proveedor_id: u.proveedor_id, mercados: [...mercados] },
+          proveedor_id: u.proveedor_id, mercados, vistas: [...(u.vistas || [])],
+          original: { rol: u.rol, nombre: u.nombre, activo: u.activo, proveedor_id: u.proveedor_id, mercados: [...mercados],
+                      vistas: [...(u.vistas || [])] },
           tocados: {}, intento: false, guardando: false, error: '',
         };
         nextTick(() => {
@@ -400,6 +419,7 @@ async function iniciar() {
             rol: p.rol,
             proveedor_id: esProv ? p.proveedor_id : null,
             mercados,
+            vistas: vistasValidas(p.rol, p.vistas),
             invitar: !!p.invitar,
           });
           this.reemplazar(r.usuario);
@@ -428,6 +448,7 @@ async function iniciar() {
             rol: p.rol,
             proveedor_id: p.rol === 'PROVEEDOR' ? p.proveedor_id : null,
             mercados: usaMercados(p.rol) ? p.mercados : [],
+            vistas: vistasValidas(p.rol, p.vistas),
           });
           const n = r.sesiones_cerradas || 0;
           const aviso = 'Guardado' + (r.acceso_cambio
@@ -609,7 +630,7 @@ async function iniciar() {
         try {
           const [usuarios, um, mercados, proveedores] = await Promise.all([
             traerTodo(() => sb.from('usuarios')
-              .select('id, correo, nombre, rol, proveedor_id, activo, auth_user_id, debe_cambiar_clave').order('correo')),
+              .select('id, correo, nombre, rol, proveedor_id, activo, auth_user_id, debe_cambiar_clave, vistas').order('correo')),
             traerTodo(() => sb.from('usuario_mercados').select('usuario_id, mercado_id').order('usuario_id')),
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre, moneda, ultima_carga').order('id')),
             traerTodo(() => sb.from('proveedores').select('id, mercado_id, nombre, activo').order('nombre')),

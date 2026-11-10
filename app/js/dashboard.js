@@ -189,6 +189,8 @@ async function iniciar() {
 
   sb.auth.onAuthStateChange((evento) => { if (evento === 'SIGNED_OUT') location.replace('index.html'); });
   $$('oasisLink').classList.toggle('hidden', !ROLES_CON_OASIS.includes(usuario.rol));
+  // El Cliente con la vista «materiales» tiene su segunda pestaña (el Tracking, solo lectura).
+  $$('materialesLink').classList.toggle('hidden', !(esCliente(usuario) && tieneVista(usuario, 'materiales')));
 
   const inicial = vistaDeHash();
   history.replaceState(inicial, '', hashDe(inicial));
@@ -276,6 +278,7 @@ function pintarBarra() {
   $$('bbw').classList.toggle('hidden', enPortada);
   $$('btnVolver').textContent = '◀ LATAM';   // como el original: volver a la portada
   $$('salirBtn').textContent = t('salir');
+  $$('materialesLink').textContent = lang === 'pt' ? 'Materiais' : 'Materiales';
   $$('lES').classList.toggle('on', lang === 'es');
   $$('lPT').classList.toggle('on', lang === 'pt');
   $$('anioSel').setAttribute('aria-label', t('anio'));
