@@ -110,9 +110,14 @@ type Usuario = {
 // el que el ADMIN creó al usuario. Lista cerrada (nunca una URL que mande el
 // navegador); cada una debe estar también en Supabase → Authentication → URL
 // Configuration → Redirect URLs. Sin origen conocido, el sitio publicado.
-const SITIO = "https://zeta-be.github.io";
+// El sitio vive en https://zetabe.agency/OASIS/ (dominio propio de la
+// organización en GitHub Pages). La dirección anterior, zeta-be.github.io/OASIS,
+// redirige sola a la nueva; se sigue aceptando como origen durante la transición.
+const SITIO = "https://zetabe.agency";
 const DESTINOS: Record<string, string> = {
   [SITIO]: SITIO + "/OASIS/clave.html",
+  "https://www.zetabe.agency": SITIO + "/OASIS/clave.html",
+  "https://zeta-be.github.io": SITIO + "/OASIS/clave.html",
   "http://localhost:8000": "http://localhost:8000/clave.html",
   "http://127.0.0.1:8000": "http://127.0.0.1:8000/clave.html",
 };
