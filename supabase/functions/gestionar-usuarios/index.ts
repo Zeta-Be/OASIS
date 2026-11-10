@@ -10,8 +10,9 @@
 //                falla, el usuario queda creado sin login y la pantalla ofrece
 //                la contraseña temporal. Sin invitar, funciona como siempre.
 //   reenviar_invitacion { usuario_id } -> { usuario, invitacion }
-//                Para quien todavía no ha creado su contraseña
-//                (debe_cambiar_clave). Borra el login anterior —con él mueren
+//                Para un usuario activo sin login (se le crea con la
+//                invitación y queda con debe_cambiar_clave) o que todavía no
+//                ha creado su contraseña (debe_cambiar_clave). Borra el login anterior —con él mueren
 //                el enlace viejo o la temporal— y manda una invitación nueva.
 //                Cada envío o intento queda en auditoría: '(invitación)'; el
 //                login recreado, como '(login)'.
@@ -301,7 +302,9 @@ Deno.serve(async (req) => {
     if (accion === "reenviar_invitacion") {
       const actual = await leerUsuario(sb, id);
       if (!actual.activo) throw new Rechazo(400, "Está desactivado: reactívalo antes de invitarlo.");
-      if (!actual.debe_cambiar_clave) {
+      // Sin login se puede invitar siempre; con login, solo mientras no haya
+      // creado su contraseña.
+      if (actual.auth_user_id && !actual.debe_cambiar_clave) {
         throw new Rechazo(400, "Ya creó su contraseña. Si la olvidó, genera una temporal con «Nueva contraseña».");
       }
       if (actual.auth_user_id) {
@@ -313,6 +316,13 @@ Deno.serve(async (req) => {
       }
       // Con login anterior, la auditoría dice «login recreado por reenvío de invitación».
       const invitacion = await invitar(sb, admin, actual, destinoInvitacion(req), !!actual.auth_user_id);
+      if (invitacion.enviada && !actual.debe_cambiar_clave) {
+        // Usuario antiguo sin login: la marca hace que clave.html le pida crear
+        // la contraseña. Con el JWT del ADMIN (RLS lo permite): queda en
+        // auditoría a su nombre, como campo debe_cambiar_clave.
+        const { error } = await sb.from("usuarios").update({ debe_cambiar_clave: true }).eq("id", id);
+        if (error) throw desdePostgres(error);
+      }
       return responder({ usuario: await leerUsuario(sb, id), invitacion });
     }
 

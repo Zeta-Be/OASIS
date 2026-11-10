@@ -105,7 +105,7 @@
                             @click="pedir(u, 'reactivar')">Reactivar</button>
                     <button type="button" class="mini" :disabled="u._ocupado"
                             @click="pedir(u, 'nueva_clave')">{{ u.auth_user_id ? 'Nueva contraseña' : 'Crear login' }}</button>
-                    <button v-if="u.activo && u.debe_cambiar_clave" type="button" class="mini" :disabled="u._ocupado"
+                    <button v-if="u.activo && (u.debe_cambiar_clave || !u.auth_user_id)" type="button" class="mini" :disabled="u._ocupado"
                             title="Le manda un correo con el enlace para crear su contraseña (vale 24 horas)"
                             @click="pedir(u, 'reenviar_invitacion')">{{ u.auth_user_id ? 'Reenviar invitación' : 'Enviar invitación' }}</button>
                     <button v-if="!u.activo" type="button" class="mini peligro" :disabled="u._ocupado"
