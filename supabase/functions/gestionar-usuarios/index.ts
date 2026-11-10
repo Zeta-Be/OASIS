@@ -2,7 +2,23 @@
 // pantalla Usuarios. Solo ADMIN activo; cualquier otro recibe 403.
 //
 // POST { accion, ... } con la sesión del ADMIN:
-//   crear        { correo, nombre, rol, proveedor_id?, mercados? } -> { usuario, clave }
+//   crear        { correo, nombre, rol, proveedor_id?, mercados?, invitar? }
+//                -> { usuario, clave } o, con invitar: true,
+//                   { usuario, clave: null, invitacion: { enviada, error } }
+//                Con invitar, Auth crea el login y manda el correo de invitación
+//                (plantilla «Invite user»), con enlace a clave.html. Si el envío
+//                falla, el usuario queda creado sin login y la pantalla ofrece
+//                la contraseña temporal. Sin invitar, funciona como siempre.
+//   reenviar_invitacion { usuario_id } -> { usuario, invitacion }
+//                Para quien todavía no ha creado su contraseña
+//                (debe_cambiar_clave). Borra el login anterior —con él mueren
+//                el enlace viejo o la temporal— y manda una invitación nueva.
+//                Cada envío o intento queda en auditoría: '(invitación)'; el
+//                login recreado, como '(login)'.
+//                La plantilla «Invite user» enlaza a
+//                {{ .RedirectTo }}?token_hash={{ .TokenHash }}&type=invite: el
+//                enlace no se gasta al abrirlo (escáneres de correo), sino
+//                cuando la persona hace clic en «Continuar» en clave.html.
 //   desactivar   { usuario_id }                                     -> { usuario }
 //   reactivar    { usuario_id }                                     -> { usuario }
 //   nueva_clave  { usuario_id }                                     -> { usuario, clave }
@@ -21,7 +37,7 @@
 //   * el del ADMIN (su JWT) para todo lo de la base: las funciones fn_admin_*
 //     revisan otra vez que sea ADMIN y la auditoría registra quién lo hizo;
 //   * el de servicio (llave secreta) SOLO para Auth: crear el login, bloquearlo
-//     o desbloquearlo, poner una contraseña temporal.
+//     o desbloquearlo, poner una contraseña temporal, invitar por correo.
 // La contraseña temporal sale una sola vez en la respuesta; no se guarda ni se
 // escribe en el log.
 //
@@ -84,7 +100,24 @@ export function generarClave(largo = 12): string {
 
 const BLOQUEO = "876000h"; // 100 años: «desactivado» en Auth
 
-type Usuario = { id: number; correo: string; rol: string; activo: boolean; auth_user_id: string | null };
+type Usuario = {
+  id: number; correo: string; nombre: string; rol: string; activo: boolean;
+  auth_user_id: string | null; debe_cambiar_clave: boolean;
+};
+
+// A dónde lleva el enlace de la invitación: al clave.html del mismo sitio desde
+// el que el ADMIN creó al usuario. Lista cerrada (nunca una URL que mande el
+// navegador); cada una debe estar también en Supabase → Authentication → URL
+// Configuration → Redirect URLs. Sin origen conocido, el sitio publicado.
+const SITIO = "https://zeta-be.github.io";
+const DESTINOS: Record<string, string> = {
+  [SITIO]: SITIO + "/OASIS/clave.html",
+  "http://localhost:8000": "http://localhost:8000/clave.html",
+  "http://127.0.0.1:8000": "http://127.0.0.1:8000/clave.html",
+};
+const destinoInvitacion = (req: Request) => DESTINOS[req.headers.get("Origin") ?? ""] ?? DESTINOS[SITIO];
+
+type Invitacion = { enviada: boolean; error: string | null };
 
 async function rpc<T>(sb: SupabaseClient, fn: string, args: Record<string, unknown>): Promise<T> {
   const { data, error } = await sb.rpc(fn, args);
@@ -111,6 +144,39 @@ async function crearLogin(admin: SupabaseClient, correo: string, clave: string) 
     }
     throw new Rechazo(500, "Auth no creó el login: " + error.message);
   }
+}
+
+// Manda la invitación (Auth crea el login sin contraseña y envía el correo) y
+// deja el resultado en auditoría. No lanza si el correo no sale: devuelve por
+// qué, para que la pantalla ofrezca la contraseña temporal.
+async function invitar(sb: SupabaseClient, admin: SupabaseClient, u: Usuario, destino: string,
+  loginRecreado = false): Promise<Invitacion> {
+  let fallo: string | null = null;
+  const { error } = await admin.auth.admin.inviteUserByEmail(u.correo, {
+    redirectTo: destino,
+    data: { nombre: u.nombre, rol: u.rol },   // disponibles en la plantilla: {{ .Data.nombre }}
+  });
+  if (error) {
+    if (/already|registered|exists/i.test(error.message)) {
+      fallo = `Ya hay un login con ${u.correo} en Supabase Auth sin usuario en OASIS. ` +
+        "Bórralo en Authentication → Users y reenvía la invitación.";
+    } else if (/rate limit/i.test(error.message)) {
+      fallo = "Supabase llegó al tope de correos por hora. Espera un rato y reenvía la invitación.";
+    } else {
+      fallo = "No se pudo enviar el correo: " + error.message;
+    }
+  } else {
+    // Un login viejo sin confirmar recibe el correo, pero no se vincula
+    // (el trigger solo corre al crear el login).
+    const ahora = await leerUsuario(sb, u.id);
+    if (!ahora.auth_user_id) {
+      fallo = `Había un login viejo con ${u.correo} en Supabase Auth que no quedó vinculado. ` +
+        "Bórralo en Authentication → Users y reenvía la invitación.";
+    }
+  }
+  await rpc(sb, "fn_admin_registrar_invitacion",
+    { p_usuario_id: u.id, p_enviada: !fallo, p_detalle: fallo, p_login_recreado: loginRecreado });
+  return { enviada: !fallo, error: fallo };
 }
 
 Deno.serve(async (req) => {
@@ -154,6 +220,12 @@ Deno.serve(async (req) => {
         p_proveedor_id: cuerpo.proveedor_id ?? null,
         p_mercados: Array.isArray(cuerpo.mercados) ? cuerpo.mercados : [],
       });
+      if (cuerpo.invitar === true) {
+        // Si el correo no sale, el usuario se queda (sin login): la pantalla
+        // avisa y ofrece reenviar o generar una contraseña temporal.
+        const invitacion = await invitar(sb, admin, nuevo, destinoInvitacion(req));
+        return responder({ usuario: await leerUsuario(sb, nuevo.id), clave: null, invitacion });
+      }
       const clave = generarClave();
       try {
         await crearLogin(admin, nuevo.correo, clave);
@@ -225,12 +297,34 @@ Deno.serve(async (req) => {
       return responder({ borrado: true, usuario_id: id, correo: r.correo, advertencia });
     }
 
+    // ---- reenviar (o enviar por primera vez) la invitación
+    if (accion === "reenviar_invitacion") {
+      const actual = await leerUsuario(sb, id);
+      if (!actual.activo) throw new Rechazo(400, "Está desactivado: reactívalo antes de invitarlo.");
+      if (!actual.debe_cambiar_clave) {
+        throw new Rechazo(400, "Ya creó su contraseña. Si la olvidó, genera una temporal con «Nueva contraseña».");
+      }
+      if (actual.auth_user_id) {
+        // Auth no reinvita a un login ya confirmado (abrir el enlace lo
+        // confirma). Todavía no tiene contraseña propia: se borra y se crea de
+        // nuevo con la invitación. La fila de usuarios no se toca.
+        const { error } = await admin.auth.admin.deleteUser(actual.auth_user_id);
+        if (error) throw new Rechazo(500, "Auth no pudo renovar el login: " + error.message);
+      }
+      // Con login anterior, la auditoría dice «login recreado por reenvío de invitación».
+      const invitacion = await invitar(sb, admin, actual, destinoInvitacion(req), !!actual.auth_user_id);
+      return responder({ usuario: await leerUsuario(sb, id), invitacion });
+    }
+
     // ---- nueva contraseña temporal
     if (accion === "nueva_clave") {
       const actual = await leerUsuario(sb, id);
       const clave = generarClave();
       if (actual.auth_user_id) {
-        const { error } = await admin.auth.admin.updateUserById(actual.auth_user_id, { password: clave });
+        // email_confirm: un login creado por invitación que nunca abrió el
+        // enlace está sin confirmar, y Auth no lo dejaría entrar con contraseña.
+        const { error } = await admin.auth.admin.updateUserById(actual.auth_user_id,
+          { password: clave, email_confirm: true });
         if (error) throw new Rechazo(500, "Auth no cambió la contraseña: " + error.message);
       } else {
         // Usuario de antes sin login (alta manual a medias): se le crea ahora.
@@ -241,7 +335,7 @@ Deno.serve(async (req) => {
       return responder({ usuario, clave });
     }
 
-    return responder({ error: "accion: crear, editar, borrar, desactivar, reactivar o nueva_clave" }, 400);
+    return responder({ error: "accion: crear, editar, borrar, desactivar, reactivar, nueva_clave o reenviar_invitacion" }, 400);
   } catch (e) {
     if (e instanceof Rechazo) return responder({ error: e.message }, e.estado);
     console.error(e);

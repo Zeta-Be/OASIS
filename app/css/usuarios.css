@@ -67,3 +67,25 @@
 .aviso-global { margin-bottom: 14px; display: flex; align-items: center; gap: 12px; justify-content: space-between; }
 .acciones-fila .confirma-borrar { height: 26px; width: 240px; border: 1px solid var(--err); padding: 0 8px; font-size: 11.5px; }
 .aviso-borrar { max-width: 460px; white-space: normal; }
+
+/* Casilla «Enviar invitación por correo» del panel de alta */
+.campo label.casilla {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink);
+  cursor: pointer;
+}
+.campo label.casilla input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  flex: none;
+  accent-color: var(--ink);
+}
