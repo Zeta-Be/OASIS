@@ -18,7 +18,7 @@ la pantalla Usuarios.
    login en Auth sin contraseña y vinculado, contraseña temporal como
    alternativa, reenvío (login recreado), auditoría de cada envío y el canje
    del enlace como lo hace clave.html (token_hash leído de la base, sin
-   imprimirlo): una sola vez, crear la contraseña y entrar. OJO: esta parte manda dos correos
+   imprimirlo): una sola vez, crear la contraseña y entrar. OJO: esta parte manda tres correos
    reales por el SMTP de Supabase. Van a un alias del buzón de OASIS
    (oasis.zetabe+prueba.…@gmail.com) para que no reboten; otro destino:
    OASIS_CORREO_INVITACION=alguien@dominio.com. Abrir el enlace del correo y
@@ -49,6 +49,7 @@ SUFIJO = secrets.token_hex(4)
 CORREO_ADMIN = f"oasis.prueba.admin.{SUFIJO}@example.com"
 CORREO_USUARIO = f"oasis.prueba.usuario.{SUFIJO}@example.com"
 # El invitado recibe correos de verdad: un alias (+) del buzón remitente, que no rebota.
+CORREO_SIN_LOGIN = f"oasis.zetabe+sinlogin.{SUFIJO}@gmail.com"   # usuario antiguo sin login, invitado después
 CORREO_INVITADO = os.environ.get("OASIS_CORREO_INVITACION", f"oasis.zetabe+prueba.{SUFIJO}@gmail.com").lower()
 
 informe = []
@@ -113,7 +114,7 @@ def preparar_admin(cur, clave):
 
 def limpiar(cur):
     """Borra lo que creó la prueba, por correo: sirve aunque haya fallado a medias."""
-    correos = (CORREO_ADMIN, CORREO_USUARIO, CORREO_INVITADO)
+    correos = (CORREO_ADMIN, CORREO_USUARIO, CORREO_INVITADO, CORREO_SIN_LOGIN)
     cur.execute("SELECT id FROM usuarios WHERE correo IN %s", (correos,))
     ids = [r[0] for r in cur.fetchall()]
     cur.execute("DELETE FROM auth.users WHERE email IN %s", (correos,))
@@ -354,6 +355,27 @@ def invitacion(cur, token_admin, token_u, admin_id, usuario_con_clave_id, mco):
     estado, r = funcion(token_admin, accion="reenviar_invitacion", usuario_id=invitado_id)
     anotar(estado == 400, f"Ya con contraseña propia no se le reinvita: {estado}")
 
+    # Usuario antiguo: activo, sin login y sin la marca (como los pilotos). Se le puede invitar.
+    cur.execute("INSERT INTO usuarios (correo, nombre, rol, activo) VALUES (%s, 'Prueba sin login', 'LECTURA', true) RETURNING id",
+                (CORREO_SIN_LOGIN,))
+    sin_login_id = cur.fetchone()[0]
+    estado, r = funcion(token_admin, accion="reenviar_invitacion", usuario_id=sin_login_id)
+    inv = (r or {}).get("invitacion") or {}
+    u = (r or {}).get("usuario") or {}
+    login = login_de(cur, CORREO_SIN_LOGIN)
+    anotar(estado == 200 and inv.get("enviada") is True and bool(login) and u.get("auth_user_id") == login[0]
+           and u.get("debe_cambiar_clave") is True and login[1] and not login[3],
+           f"Invitar a un usuario activo sin login: {estado} — login invitado y vinculado, queda pendiente de crear su contraseña")
+    cur.execute("""SELECT campo, valor_nuevo FROM auditoria
+                   WHERE tabla = 'usuarios' AND fila_id = %s AND usuario_id = %s ORDER BY id""", (sin_login_id, admin_id))
+    filas = cur.fetchall()
+    anotar(("(invitación)", f"enviada a {CORREO_SIN_LOGIN}") in filas and any(f[0] == "debe_cambiar_clave" for f in filas)
+           and not any(f[0] == "(login)" for f in filas),
+           f"Auditoría con el ADMIN: envío y marca, sin «login recreado» — {filas}")
+    cur.execute("UPDATE usuarios SET activo = false WHERE id = %s", (sin_login_id,))
+    estado, r = funcion(token_admin, accion="reenviar_invitacion", usuario_id=sin_login_id)
+    anotar(estado == 400, f"A un desactivado no se le invita: {estado} — {(r or {}).get('error')}")
+
 
 def editar(cur, token_admin, token_u, admin_id, usuario_id, mco, clave_u, refresh_u):
     """Acción editar: mercados, nombre y rol; reglas; cierre de sesiones; auditoría."""
@@ -485,7 +507,7 @@ def main():
         anotar(not hallazgos, "git grep: ninguna llave secreta (sb_secret_ ni JWT service_role) en archivos ni historial"
                + (f" — {hallazgos}" if hallazgos else ""))
         logins, usuarios, auditoria = limpiar(cur)
-        correos = (CORREO_ADMIN, CORREO_USUARIO, CORREO_INVITADO)
+        correos = (CORREO_ADMIN, CORREO_USUARIO, CORREO_INVITADO, CORREO_SIN_LOGIN)
         cur.execute("SELECT (SELECT count(*) FROM usuarios WHERE correo IN %s) + (SELECT count(*) FROM auth.users WHERE email IN %s)",
                     (correos, correos))
         quedan = cur.fetchone()[0]
