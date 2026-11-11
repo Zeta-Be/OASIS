@@ -707,7 +707,7 @@ async function iniciar() {
           const [usuarios, um, up, mercados, proveedores, vistas] = await Promise.all([
             traerTodo(() => sb.from('usuarios')
               .select('id, correo, nombre, rol, proveedor_id, activo, auth_user_id, debe_cambiar_clave, vistas, todos_los_mercados').order('correo')),
-            traerTodo(() => sb.from('usuario_mercados').select('usuario_id, mercado_id').order('usuario_id')),
+            traerTodo(() => sb.from('usuario_mercados').select('usuario_id, mercado_id').order('usuario_id').order('mercado_id')),
             traerTodo(() => sb.from('usuario_proveedores').select('usuario_id, proveedor_id').order('usuario_id')),
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre, moneda, ultima_carga').order('id')),
             traerTodo(() => sb.from('proveedores').select('id, mercado_id, nombre, activo').order('nombre')),
