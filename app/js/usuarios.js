@@ -12,26 +12,28 @@ const ROLES = [
   { valor: 'AGENCIA',   etiqueta: 'Agencia',   ayuda: 'portal: enlaces de sus mercados' },
   { valor: 'PROVEEDOR', etiqueta: 'Proveedor', ayuda: 'portal: reporte y evidencias' },
   { valor: 'LECTURA',   etiqueta: 'Lectura',   ayuda: 'consulta sin captura, todos los mercados' },
-  { valor: 'CLIENTE',   etiqueta: 'Cliente',   ayuda: 'solo el dashboard de sus mercados' },
+  { valor: 'CLIENTE',   etiqueta: 'Cliente',   ayuda: 'dashboard de sus mercados y las pantallas que se le habiliten' },
   { valor: 'ADMIN',     etiqueta: 'Admin',     ayuda: 'todo, en todos los mercados' },
 ];
 const ETIQUETA_ROL = { ...Object.fromEntries(ROLES.map(r => [r.valor, r.etiqueta])), PLANNING: 'Planning (antiguo)' };
 
-// Igual que en la base (sql/usuarios_edicion.sql): Admin y Lectura ven todos los
-// mercados y no se les eligen; Proveedor lleva su proveedor; los demás, al
-// menos un mercado.
+// Igual que en la base (sql/usuarios_permisos.sql): Admin y Lectura ven todos los
+// mercados y no se les eligen; Proveedor lleva su proveedor y los países donde
+// trabaja; los demás, «Todos los países» o al menos un país.
 const VEN_TODOS = ['ADMIN', 'LECTURA'];
 const usaMercados = (rol) => !!rol && rol !== 'PROVEEDOR' && !VEN_TODOS.includes(rol);
 
-// Vistas adicionales que admite cada rol (igual que fn_vistas_de_rol en la base,
-// sql/cliente_vistas.sql). Para sumar otra: aquí y allá.
-const VISTAS_POR_ROL = {
-  CLIENTE: [{ valor: 'materiales', etiqueta: 'Materiales', ayuda: 'Tracking, solo lectura' }],
-};
-const vistasDe = (rol) => VISTAS_POR_ROL[rol] || [];
-const ETIQUETA_VISTA = Object.fromEntries(Object.values(VISTAS_POR_ROL).flat().map(v => [v.valor, v.etiqueta]));
+// Vistas por usuario: salen de la tabla vistas_catalogo (la lee al cargar). Para
+// sumar una pantalla basta un INSERT allí (más su vista y su página): esta
+// pantalla no cambia. Las que tienen siempre = true se muestran marcadas y fijas.
+let CATALOGO_VISTAS = [];
+const vistasDe = (rol) => CATALOGO_VISTAS.filter(v => (v.roles || []).includes(rol));
+const vistasElegibles = (rol) => vistasDe(rol).filter(v => !v.siempre);
+const etiquetaVista = (v) => (CATALOGO_VISTAS.find(x => x.vista === v) || {}).etiqueta || v;
 // Las vistas elegidas que el rol admite, ordenadas (lo que se manda y se compara).
-const vistasValidas = (rol, vistas) => vistasDe(rol).map(v => v.valor).filter(v => (vistas || []).includes(v)).sort();
+const vistasValidas = (rol, vistas) => vistasElegibles(rol).map(v => v.vista).filter(v => (vistas || []).includes(v)).sort();
+// Mismo nombre de proveedor en varios países (la base exige el mismo nombre).
+const claveProveedor = (nombre) => String(nombre || '').trim().toUpperCase();
 
 // Diferencia con la tasa vigente a partir de la cual se pide confirmar.
 const TOPE_DIFERENCIA = 0.2;
@@ -116,8 +118,10 @@ async function iniciar() {
       errorCarga: '',
       usuarios: [],
       mercadosDe: new Map(),   // usuario_id -> [mercado_id]
+      proveedoresDeU: new Map(), // usuario_id -> [proveedor_id] (usuario_proveedores)
       mercados: [],
       proveedores: [],
+      catalogoVistas: [],      // vistas_catalogo
       filtros: { buscar: '', rol: '', estado: '' },
       confirmar: null,         // { id, accion, pregunta }
       borrarU: null,           // { id, escrito }: confirmación de borrado, escribiendo el correo
@@ -136,13 +140,33 @@ async function iniciar() {
     computed: {
       mercadosPorId() { return new Map(this.mercados.map(m => [m.id, m])); },
       proveedoresPorId() { return new Map(this.proveedores.map(p => [p.id, p])); },
-      opcionesMercado() { return this.mercados.map(m => ({ valor: m.id, etiqueta: `${m.codigo} · ${m.nombre}` })); },
-      proveedoresDelMercado() {
+      // Países del selector: primero los que tienen datos (ya cargados), después los
+      // que no (hoy MLB y MPE), en gris. Todos se pueden asignar.
+      paisesSelector() {
+        const con = this.mercados.filter(m => m.ultima_carga), sin = this.mercados.filter(m => !m.ultima_carga);
+        return [...con.map(m => ({ ...m, sinDatos: false })), ...sin.map(m => ({ ...m, sinDatos: true }))];
+      },
+      // Proveedores por nombre (el mismo en varios países), para el alta de un Proveedor.
+      // Al editar, los suyos aparecen aunque se hayan desactivado (unificación).
+      gruposProveedor() {
         const p = this.panel;
-        if (!p) return [];
-        // Al editar, el proveedor actual aparece aunque se haya desactivado (unificación).
-        return this.proveedores.filter(x => x.mercado_id === p.mercadoProveedor
-                                            && (x.activo || x.id === (p.original || {}).proveedor_id));
+        const suyos = new Set((p && p.original && p.original.proveedores) || []);
+        const g = new Map();
+        for (const x of this.proveedores) {
+          if (!x.activo && !suyos.has(x.id)) continue;
+          const k = claveProveedor(x.nombre);
+          if (!g.has(k)) g.set(k, { clave: k, nombre: x.nombre, filas: [] });
+          g.get(k).filas.push(x);
+        }
+        return [...g.values()].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
+          .map(x => ({ ...x, paises: x.filas.map(f => this.codigoMercado(f.mercado_id)).sort().join(', ') }));
+      },
+      // Los países donde existe el proveedor elegido (una fila de proveedores por país).
+      paisesDelProveedor() {
+        const p = this.panel;
+        if (!p || !p.grupoProveedor) return [];
+        const g = this.gruposProveedor.find(x => x.clave === p.grupoProveedor);
+        return g ? g.filas.slice().sort((a, b) => this.codigoMercado(a.mercado_id).localeCompare(this.codigoMercado(b.mercado_id))) : [];
       },
       adminsActivos() { return this.usuarios.filter(u => u.rol === 'ADMIN' && u.activo).length; },
       // El panel muestra un resultado (contraseña temporal o invitación), no el formulario.
@@ -184,8 +208,10 @@ async function iniciar() {
         else if (o && o.rol === 'ADMIN' && o.activo && p.rol !== 'ADMIN' && this.adminsActivos <= 1) {
           e.rol = 'Es el último Admin activo: OASIS no puede quedar sin uno';
         }
-        if (p.rol === 'PROVEEDOR') { if (!p.proveedor_id) e.proveedor_id = 'Obligatorio para un proveedor'; }
-        else if (usaMercados(p.rol) && !p.mercados.length) e.mercados = 'Elige al menos un mercado';
+        if (p.rol === 'PROVEEDOR') {
+          if (!p.grupoProveedor) e.proveedor_id = 'Obligatorio para un proveedor';
+          else if (!p.proveedores.length) e.proveedores = 'Elige al menos un país donde trabaja';
+        } else if (usaMercados(p.rol) && !p.todos && !p.mercados.length) e.mercados = 'Elige al menos un país o «Todos los países»';
         return e;
       },
       hayErrores() { return Object.keys(this.erroresPanel).length > 0; },
@@ -196,22 +222,19 @@ async function iniciar() {
         const o = p.original;
         const c = [];
         if (p.rol !== o.rol) c.push(`rol: ${this.etiquetaRol(o.rol)} → ${this.etiquetaRol(p.rol)}`);
-        if (p.rol === 'PROVEEDOR' && p.proveedor_id !== o.proveedor_id) {
-          const n = (id) => (this.proveedoresPorId.get(id) || {}).nombre || '—';
-          c.push(`proveedor: ${n(o.proveedor_id)} → ${n(p.proveedor_id)}`);
+        if (p.rol === 'PROVEEDOR') {
+          const antes = [...o.proveedores].sort((a, b) => a - b).join(','), ahora = [...p.proveedores].sort((a, b) => a - b).join(',');
+          if (antes !== ahora) c.push(`proveedor: ${this.textoProveedores(o.proveedores)} → ${this.textoProveedores(p.proveedores)}`);
         }
         const vAntes = vistasValidas(o.rol, o.vistas), vAhora = vistasValidas(p.rol, p.vistas);
         if (vAntes.join(',') !== vAhora.join(',')) {
-          const nombres = (vs) => vs.map(v => ETIQUETA_VISTA[v] || v).join(', ') || 'ninguna';
-          c.push(`vistas adicionales: ${nombres(vAntes)} → ${nombres(vAhora)}`);
+          const nombres = (vs) => vs.map(etiquetaVista).join(', ') || 'solo el dashboard';
+          c.push(`pantallas: ${nombres(vAntes)} → ${nombres(vAhora)}`);
         }
         if (usaMercados(p.rol)) {
-          const antes = [...o.mercados].sort((a, b) => a - b).join(',');
-          const ahora = [...p.mercados].sort((a, b) => a - b).join(',');
-          if (antes !== ahora) {
-            const cods = (ids) => ids.map(id => this.codigoMercado(id)).join(', ') || 'ninguno';
-            c.push(`mercados: ${cods(o.mercados)} → ${cods(p.mercados)}`);
-          }
+          const cods = (todos, ids) => (todos ? 'Todos' : ids.map(id => this.codigoMercado(id)).sort().join(', ') || 'ninguno');
+          const antes = cods(o.todos, o.mercados), ahora = cods(p.todos, p.mercados);
+          if (antes !== ahora) c.push(`países: ${antes} → ${ahora}`);
         }
         return c;
       },
@@ -262,17 +285,58 @@ async function iniciar() {
     methods: {
       etiquetaRol(r) { return ETIQUETA_ROL[r] || r; },
       vistasDe,
+      vistasDelRol(rol) { return this.catalogoVistas.filter(v => (v.roles || []).includes(rol)); },
       codigoMercado(id) { const m = this.mercadosPorId.get(id); return m ? m.codigo : '?'; },
+      // «JCDECAUX (MCO, MLC)»
+      textoProveedores(ids) {
+        const filas = (ids || []).map(id => this.proveedoresPorId.get(id)).filter(Boolean);
+        if (!filas.length) return '—';
+        const nombre = filas[0].nombre;
+        return `${nombre} (${filas.map(f => this.codigoMercado(f.mercado_id)).sort().join(', ')})`;
+      },
       alcance(u) {
         if (u.rol === 'PROVEEDOR') {
-          const p = this.proveedoresPorId.get(u.proveedor_id);
-          return p ? `${p.nombre} (${this.codigoMercado(p.mercado_id)})` : '';
+          return this.textoProveedores(this.proveedoresDeU.get(u.id) || (u.proveedor_id ? [u.proveedor_id] : []));
         }
-        if (VEN_TODOS.includes(u.rol)) return 'Todos';
+        if (VEN_TODOS.includes(u.rol) || u.todos_los_mercados) {
+          const vistas = vistasValidas(u.rol, u.vistas).map(etiquetaVista);
+          return vistas.length ? `Todos · + ${vistas.join(', ')}` : 'Todos';
+        }
         const ids = this.mercadosDe.get(u.id) || [];
         const mercados = ids.map(id => this.codigoMercado(id)).join(', ') || 'sin mercados';
-        const vistas = vistasValidas(u.rol, u.vistas).map(v => ETIQUETA_VISTA[v] || v);
+        const vistas = vistasValidas(u.rol, u.vistas).map(etiquetaVista);
         return vistas.length ? `${mercados} · + ${vistas.join(', ')}` : mercados;
+      },
+
+      // ---- selector de países: «Todos» (la marca) o «Ninguno», o países uno por uno
+      elegirTodos() {
+        const p = this.panel;
+        p.todos = !p.todos;
+        if (p.todos) p.mercados = [];
+        this.tocar('mercados');
+      },
+      elegirNinguno() {
+        this.panel.todos = false;
+        this.panel.mercados = [];
+        this.tocar('mercados');
+      },
+      alternarPais(id) {
+        const p = this.panel;
+        p.todos = false;
+        p.mercados = p.mercados.includes(id) ? p.mercados.filter(x => x !== id) : [...p.mercados, id];
+        this.tocar('mercados');
+      },
+      // ---- Proveedor: el proveedor (por nombre) y sus países
+      cambiarGrupoProveedor() {
+        const p = this.panel;
+        // Por defecto, todos los países donde existe; se pueden quitar.
+        p.proveedores = this.paisesDelProveedor.filter(f => f.activo).map(f => f.id);
+        this.tocar('proveedor_id');
+      },
+      alternarProveedor(id) {
+        const p = this.panel;
+        p.proveedores = p.proveedores.includes(id) ? p.proveedores.filter(x => x !== id) : [...p.proveedores, id];
+        this.tocar('proveedores');
       },
 
       // ---------------------------------------------------------------- Acciones por fila
@@ -361,8 +425,9 @@ async function iniciar() {
       abrirNuevo() {
         this.panel = {
           modo: 'nuevo', clave: null, correo: '', nombre: '', rol: null,
-          mercadoProveedor: (this.mercados.find(m => m.codigo === 'MCO') || this.mercados[0] || {}).id,
-          proveedor_id: null, mercados: [], vistas: [], original: null,
+          grupoProveedor: '', proveedores: [], mercados: [], todos: false,
+          vistas: [],      // desmarcadas: solo el dashboard hasta que se habilite algo
+          original: null,
           invitar: true,   // casilla «Enviar invitación por correo»; sin ella, contraseña temporal
           tocados: {}, intento: false, guardando: false, error: '',
         };
@@ -375,15 +440,17 @@ async function iniciar() {
       // El mismo panel, con los datos cargados. El correo no se edita.
       abrirEditar(u) {
         this.confirmar = null;
-        const mercados = usaMercados(u.rol) ? [...(this.mercadosDe.get(u.id) || [])] : [];
+        const mercados = usaMercados(u.rol) && !u.todos_los_mercados ? [...(this.mercadosDe.get(u.id) || [])] : [];
+        const proveedores = u.rol === 'PROVEEDOR'
+          ? [...(this.proveedoresDeU.get(u.id) || (u.proveedor_id ? [u.proveedor_id] : []))] : [];
         const prov = this.proveedoresPorId.get(u.proveedor_id);
+        const todos = !!u.todos_los_mercados && usaMercados(u.rol);
         this.panel = {
           modo: 'editar', clave: null, id: u.id, correo: u.correo, nombre: u.nombre, rol: u.rol,
-          mercadoProveedor: prov ? prov.mercado_id
-            : (this.mercados.find(m => m.codigo === 'MCO') || this.mercados[0] || {}).id,
-          proveedor_id: u.proveedor_id, mercados, vistas: [...(u.vistas || [])],
+          grupoProveedor: prov ? claveProveedor(prov.nombre) : '', proveedores, mercados, todos,
+          vistas: [...(u.vistas || [])],
           original: { rol: u.rol, nombre: u.nombre, activo: u.activo, proveedor_id: u.proveedor_id, mercados: [...mercados],
-                      vistas: [...(u.vistas || [])] },
+                      proveedores: [...proveedores], todos, vistas: [...(u.vistas || [])] },
           tocados: {}, intento: false, guardando: false, error: '',
         };
         nextTick(() => {
@@ -397,8 +464,6 @@ async function iniciar() {
         if (!p || !(p.intento || p.tocados[campo])) return '';
         return this.erroresPanel[campo] || '';
       },
-      // Otro mercado de proveedor: el proveedor elegido ya no vale.
-      cambiarMercadoProveedor() { if (this.panel) this.panel.proveedor_id = null; },
 
       guardar() { return this.panel && this.panel.modo === 'editar' ? this.editar() : this.crear(); },
 
@@ -411,19 +476,24 @@ async function iniciar() {
         p.guardando = true;
         try {
           const esProv = p.rol === 'PROVEEDOR';
-          const mercados = usaMercados(p.rol) ? p.mercados : [];
+          const todos = usaMercados(p.rol) && p.todos;
+          const mercados = usaMercados(p.rol) && !todos ? p.mercados : [];
+          const proveedores = esProv ? [...p.proveedores].sort((a, b) => a - b) : [];
           const r = await llamar({
             accion: 'crear',
             correo: p.correo.trim().toLowerCase(),
             nombre: p.nombre.trim(),
             rol: p.rol,
-            proveedor_id: esProv ? p.proveedor_id : null,
+            proveedor_id: esProv ? proveedores[0] : null,
+            proveedores,
             mercados,
+            todos_los_mercados: todos,
             vistas: vistasValidas(p.rol, p.vistas),
             invitar: !!p.invitar,
           });
           this.reemplazar(r.usuario);
           this.mercadosDe.set(r.usuario.id, [...mercados]);
+          this.proveedoresDeU.set(r.usuario.id, proveedores);
           if (r.invitacion) this.mostrarInvitacion(r.usuario, r.invitacion, 'Usuario creado');
           else this.mostrarClave(r.usuario, r.clave, 'Usuario creado');
         } catch (e) {
@@ -441,13 +511,18 @@ async function iniciar() {
         if (!this.hayCambios) { this.cerrarPanel(); return; }
         p.guardando = true;
         try {
+          const esProv = p.rol === 'PROVEEDOR';
+          const proveedores = esProv ? [...p.proveedores].sort((a, b) => a - b) : [];
+          const todos = usaMercados(p.rol) && p.todos;
           const r = await llamar({
             accion: 'editar',
             usuario_id: p.id,
             nombre: p.nombre.trim(),
             rol: p.rol,
-            proveedor_id: p.rol === 'PROVEEDOR' ? p.proveedor_id : null,
-            mercados: usaMercados(p.rol) ? p.mercados : [],
+            proveedor_id: esProv ? (proveedores.includes(p.original.proveedor_id) ? p.original.proveedor_id : proveedores[0]) : null,
+            proveedores,
+            mercados: usaMercados(p.rol) && !todos ? p.mercados : [],
+            todos_los_mercados: todos,
             vistas: vistasValidas(p.rol, p.vistas),
           });
           const n = r.sesiones_cerradas || 0;
@@ -455,6 +530,7 @@ async function iniciar() {
             ? (n ? ` · se cerraron ${n} ${n === 1 ? 'sesión' : 'sesiones'}` : ' · no tenía sesiones abiertas')
             : '');
           this.mercadosDe.set(p.id, [...(r.mercados || [])]);
+          this.proveedoresDeU.set(p.id, [...(r.proveedores || [])]);
           this.reemplazar(r.usuario, aviso);
           this.panel = null;
         } catch (e) {
@@ -628,13 +704,23 @@ async function iniciar() {
 
       async cargar() {
         try {
-          const [usuarios, um, mercados, proveedores] = await Promise.all([
+          const [usuarios, um, up, mercados, proveedores, vistas] = await Promise.all([
             traerTodo(() => sb.from('usuarios')
-              .select('id, correo, nombre, rol, proveedor_id, activo, auth_user_id, debe_cambiar_clave, vistas').order('correo')),
+              .select('id, correo, nombre, rol, proveedor_id, activo, auth_user_id, debe_cambiar_clave, vistas, todos_los_mercados').order('correo')),
             traerTodo(() => sb.from('usuario_mercados').select('usuario_id, mercado_id').order('usuario_id')),
+            traerTodo(() => sb.from('usuario_proveedores').select('usuario_id, proveedor_id').order('usuario_id')),
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre, moneda, ultima_carga').order('id')),
             traerTodo(() => sb.from('proveedores').select('id, mercado_id, nombre, activo').order('nombre')),
+            traerTodo(() => sb.from('vistas_catalogo').select('vista, etiqueta, ayuda, roles, orden, siempre').order('orden')),
           ]);
+          CATALOGO_VISTAS = vistas;
+          this.catalogoVistas = vistas;
+          const pu = new Map();
+          for (const x of up) {
+            if (!pu.has(x.usuario_id)) pu.set(x.usuario_id, []);
+            pu.get(x.usuario_id).push(x.proveedor_id);
+          }
+          this.proveedoresDeU = pu;
           this.usuarios = usuarios.map(u => ({ ...u, _ocupado: false, _error: '', _aviso: '' }));
           const m = new Map();
           for (const x of um) {

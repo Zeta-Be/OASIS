@@ -74,7 +74,7 @@
           <thead>
             <tr>
               <th class="pegada c0 calc">Código</th>
-              <th class="pegada c1">Cliente</th>
+              <th v-if="!esCliente" class="pegada c1">Cliente</th>
               <th :class="{ calc: soloLectura }">Campaña</th>
               <th>Tipo compra</th>
               <th>Proveedor</th>
@@ -83,13 +83,16 @@
               <th>Formato</th>
               <th>Ubicación</th>
               <th>Ciudad</th>
-              <th>Tiempo</th>
-              <th class="num">Tarifa bruta</th>
-              <th class="num">Desc. %</th>
-              <th class="num calc">Tarifa neta</th>
+              <template v-if="!esCliente">
+                <th>Tiempo</th>
+                <th class="num">Tarifa bruta</th>
+                <th class="num">Desc. %</th>
+                <th class="num calc">Tarifa neta</th>
+              </template>
               <th class="num">Cantidad</th>
-              <th class="num">Nro. sem.</th>
-              <th class="num calc" title="Automático: tarifa neta × cantidad (× nro. semanas si el tiempo es SEMANA y no es producción). Doble clic en la celda para escribirlo a mano.">Valor total</th>
+              <th v-if="!esCliente" class="num">Nro. sem.</th>
+              <th v-if="esCliente" class="num calc">Valor total</th>
+              <th v-else class="num calc" title="Automático: tarifa neta × cantidad (× nro. semanas si el tiempo es SEMANA y no es producción). Doble clic en la celda para escribirlo a mano.">Valor total</th>
               <th class="num">Fecha inicio</th>
               <th class="num">Fecha fin</th>
               <th class="estado-col"></th>
@@ -97,13 +100,13 @@
           </thead>
           <tbody>
             <tr v-if="visibles.length === 0">
-              <td colspan="19" class="vacio">No hay compras con estos filtros.</td>
+              <td :colspan="esCliente ? 13 : 19" class="vacio">No hay compras con estos filtros.</td>
             </tr>
             <tr v-for="r in visibles" :key="r._k" :data-k="r._k" :class="{ resaltada: r._k === resaltada }">
               <td class="pegada c0 calc mono num">
                 <span v-if="!filtros.mercado" class="mk">{{ codigoMercado(r.mercado_id) }}</span>{{ r.codigo }}
               </td>
-              <td class="pegada c1" :class="claseErr(r, 'cliente')" :title="msgErr(r, 'cliente')">
+              <td v-if="!esCliente" class="pegada c1" :class="claseErr(r, 'cliente')" :title="msgErr(r, 'cliente')">
                 <span v-if="soloLectura" class="txt">{{ r.cliente }}</span>
                 <input v-else v-model.trim="r.cliente" list="dl-clientes" class="ancho-s">
               </td>
@@ -154,6 +157,7 @@
                 <span v-if="soloLectura" class="txt">{{ r.ciudad }}</span>
                 <input v-else v-model.trim="r.ciudad" list="dl-ciudades" class="ancho-s">
               </td>
+              <template v-if="!esCliente">
               <td :class="claseErr(r, 'tiempo')" :title="msgErr(r, 'tiempo')">
                 <span v-if="soloLectura" class="txt">{{ r.tiempo }}</span>
                 <select v-else v-model="r.tiempo" class="ancho-xs" @change="recalcular(r, 'total')">
@@ -172,18 +176,20 @@
                            @editado="recalcular(r, 'neta')"></celda-num>
               </td>
               <td class="calc mono num" :class="{ obs: obsNeta(r) }" :title="obsNeta(r)">{{ fmtNumero(r.tarifa_neta) }}</td>
+              </template>
               <td :class="claseErr(r, 'cantidad')" :title="msgErr(r, 'cantidad')">
                 <span v-if="soloLectura" class="txt n">{{ fmtNumero(r.cantidad) }}</span>
                 <celda-num v-else v-model="r.cantidad" :decimales="0" class="ancho-xs"
                            @editado="recalcular(r, 'total')"></celda-num>
               </td>
-              <td :class="claseErr(r, 'nro_semanas')" :title="msgErr(r, 'nro_semanas')">
+              <td v-if="!esCliente" :class="claseErr(r, 'nro_semanas')" :title="msgErr(r, 'nro_semanas')">
                 <span v-if="soloLectura" class="txt n">{{ fmtNumero(r.nro_semanas) }}</span>
                 <celda-num v-else v-model="r.nro_semanas" :decimales="2" class="ancho-xs"
                            @editado="recalcular(r, 'total')"></celda-num>
               </td>
               <!-- Valor total: automático en --calc; doble clic lo vuelve manual; ↺ lo devuelve -->
-              <td v-if="!r.valor_total_manual" class="calc mono num total-auto"
+              <td v-if="esCliente" class="calc mono num">{{ fmtNumero(r.valor_total) }}</td>
+              <td v-else-if="!r.valor_total_manual" class="calc mono num total-auto"
                   :title="soloLectura ? textoFormula(r) : `Automático: ${textoFormula(r)}. Doble clic para escribirlo a mano.`"
                   @dblclick="aManual(r, `#app tr[data-k='${r._k}'] .total-manual input`)">{{ fmtNumero(r.valor_total) }}</td>
               <td v-else class="total-manual" :class="claseErr(r, 'valor_total')"
@@ -218,8 +224,8 @@
             <!-- Una fila por moneda: con «Todos» no se suman mercados -->
             <tr v-for="s in sumasPorMoneda" :key="s.moneda">
               <td class="pegada c0">Total {{ s.moneda }}</td>
-              <td class="pegada c1"></td>
-              <td colspan="14"></td>
+              <td v-if="!esCliente" class="pegada c1"></td>
+              <td :colspan="esCliente ? 9 : 14"></td>
               <td class="mono num destacado">{{ fmtNumero(s.suma) }}</td>
               <td colspan="3"></td>
             </tr>

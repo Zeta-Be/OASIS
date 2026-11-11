@@ -19,10 +19,15 @@ la pantalla Usuarios.
    alternativa, reenvío (login recreado), auditoría de cada envío y el canje
    del enlace como lo hace clave.html (token_hash leído de la base, sin
    imprimirlo): una sola vez, crear la contraseña y entrar. OJO: esta parte manda tres correos
-   reales por el SMTP de Supabase. Van a un alias del buzón de OASIS
-   (oasis.zetabe+prueba.…@gmail.com) para que no reboten; otro destino:
-   OASIS_CORREO_INVITACION=alguien@dominio.com. Abrir el enlace del correo y
-   crear la contraseña se prueba a mano.
+   reales (Resend, remitente oasis@zetabe.agency; tope del plan gratis: 100 al
+   día). Van a OASIS_CORREO_INVITACION o, sin ella, a nicolas-195@hotmail.com,
+   sin alias: no está confirmado que Outlook.com acepte el «+», y un rebote
+   daña la reputación del remitente. Por eso el invitado y el «usuario sin
+   login» usan la misma dirección, uno después del otro. Si esa dirección ya
+   es un usuario de OASIS, esta parte no corre (la limpieza borra por correo).
+   Abrir el enlace del correo y crear la contraseña se prueba a mano.
+   Permisos (sql/usuarios_permisos.sql), sin correos: «Todos los países»,
+   Proveedor en varios países y pantallas del Cliente por la API.
 3. Comprueba que un no-ADMIN recibe 403 y que la auditoría registra al ADMIN.
 4. Busca la llave secreta en el repositorio (git grep, también en el historial).
 5. Borra todo lo que creó, aunque algo falle: logins, usuarios y su auditoría.
@@ -48,9 +53,16 @@ FUNCION = f"{URL}/functions/v1/gestionar-usuarios"
 SUFIJO = secrets.token_hex(4)
 CORREO_ADMIN = f"oasis.prueba.admin.{SUFIJO}@example.com"
 CORREO_USUARIO = f"oasis.prueba.usuario.{SUFIJO}@example.com"
-# El invitado recibe correos de verdad: un alias (+) del buzón remitente, que no rebota.
-CORREO_SIN_LOGIN = f"oasis.zetabe+sinlogin.{SUFIJO}@gmail.com"   # usuario antiguo sin login, invitado después
-CORREO_INVITADO = os.environ.get("OASIS_CORREO_INVITACION", f"oasis.zetabe+prueba.{SUFIJO}@gmail.com").lower()
+# El invitado recibe correos de verdad (ver arriba). Una sola dirección, usada
+# por dos usuarios de prueba, uno después del otro.
+CORREO_INVITADO = os.environ.get("OASIS_CORREO_INVITACION", "nicolas-195@hotmail.com").lower()
+CORREO_SIN_LOGIN = CORREO_INVITADO   # usuario antiguo sin login, invitado después
+# Permisos (sin correos: contraseña temporal).
+CORREO_TODOS = f"oasis.prueba.todos.{SUFIJO}@example.com"
+CORREO_PROV = f"oasis.prueba.prov.{SUFIJO}@example.com"
+CORREO_CLI = f"oasis.prueba.cli.{SUFIJO}@example.com"
+CORREOS = (CORREO_ADMIN, CORREO_USUARIO, CORREO_INVITADO, CORREO_TODOS, CORREO_PROV, CORREO_CLI)
+correo_libre = True   # la dirección de invitación no era de nadie al empezar
 
 informe = []
 
@@ -114,7 +126,7 @@ def preparar_admin(cur, clave):
 
 def limpiar(cur):
     """Borra lo que creó la prueba, por correo: sirve aunque haya fallado a medias."""
-    correos = (CORREO_ADMIN, CORREO_USUARIO, CORREO_INVITADO, CORREO_SIN_LOGIN)
+    correos = CORREOS if correo_libre else tuple(c for c in CORREOS if c != CORREO_INVITADO)
     cur.execute("SELECT id FROM usuarios WHERE correo IN %s", (correos,))
     ids = [r[0] for r in cur.fetchall()]
     cur.execute("DELETE FROM auth.users WHERE email IN %s", (correos,))
@@ -257,8 +269,15 @@ def flujo(cur):
                     (usuario_id, usuario_id))
         anotar(cur.fetchone()[0] == 1, "Auditoría del cambio de contraseña con el propio usuario")
 
+        # ---- permisos (sql/usuarios_permisos.sql), sin correos
+        permisos(cur, token_admin, admin_id, mco)
+
         # ---- invitación por correo (sql/usuarios_invitacion.sql)
-        invitacion(cur, token_admin, token_u, admin_id, usuario_id, mco)
+        if correo_libre:
+            invitacion(cur, token_admin, token_u, admin_id, usuario_id, mco)
+        else:
+            anotar(False, f"{CORREO_INVITADO} ya es un usuario de OASIS: no se probaron las invitaciones "
+                          "(define OASIS_CORREO_INVITACION con otra dirección)")
 
         # ---- editar (sql/usuarios_edicion.sql)
         editar(cur, token_admin, token_u, admin_id, usuario_id, mco, clave3, (sesion_u or {}).get("refresh_token"))
@@ -372,7 +391,7 @@ def invitacion(cur, token_admin, token_u, admin_id, usuario_con_clave_id, mco):
     estado, r = funcion(token_admin, accion="editar", **{**base, "nombre": "Prueba invitado 2"})
     anotar(estado == 200 and r["usuario"].get("vistas") == ["materiales"] and r.get("acceso_cambio") is False,
            "editar sin mandar vistas las conserva y no cierra sesiones")
-    estado, r = funcion(token_admin, accion="editar", vistas=["inversion"], **base)
+    estado, r = funcion(token_admin, accion="editar", vistas=["alertas"], **base)
     anotar(estado == 400, f"editar rechaza una vista que no existe: {estado} — {(r or {}).get('error')}")
     estado, r = funcion(token_admin, accion="crear", correo=f"x6.{SUFIJO}@example.com", nombre="X", rol="ZB",
                         mercados=[mco], vistas=["materiales"])
@@ -384,6 +403,11 @@ def invitacion(cur, token_admin, token_u, admin_id, usuario_con_clave_id, mco):
                    WHERE tabla = 'usuarios' AND fila_id = %s AND campo = 'vistas' AND usuario_id = %s ORDER BY id""",
                 (invitado_id, admin_id))
     anotar(cur.fetchall() == [("[]", '["materiales"]'), ('["materiales"]', "[]")], "Auditoría del campo vistas con el ADMIN, antes y después")
+
+    # La misma dirección sirve para el siguiente caso: fuera el invitado (fila, login y auditoría).
+    cur.execute("DELETE FROM auth.users WHERE email = %s", (CORREO_INVITADO,))
+    cur.execute("DELETE FROM usuarios WHERE id = %s", (invitado_id,))
+    cur.execute("DELETE FROM auditoria WHERE tabla = 'usuarios' AND fila_id = %s", (invitado_id,))
 
     # Usuario antiguo: activo, sin login y sin la marca (como los pilotos). Se le puede invitar.
     cur.execute("INSERT INTO usuarios (correo, nombre, rol, activo) VALUES (%s, 'Prueba sin login', 'LECTURA', true) RETURNING id",
@@ -405,6 +429,59 @@ def invitacion(cur, token_admin, token_u, admin_id, usuario_con_clave_id, mco):
     cur.execute("UPDATE usuarios SET activo = false WHERE id = %s", (sin_login_id,))
     estado, r = funcion(token_admin, accion="reenviar_invitacion", usuario_id=sin_login_id)
     anotar(estado == 400, f"A un desactivado no se le invita: {estado} — {(r or {}).get('error')}")
+
+
+def permisos(cur, token_admin, admin_id, mco):
+    """«Todos los países», Proveedor en varios países y pantallas del Cliente, por la Edge Function."""
+    cur.execute("SELECT id FROM mercados WHERE codigo = 'MLC'")
+    mlc = cur.fetchone()[0]
+    cur.execute("SELECT mercado_id, id FROM proveedores WHERE nombre = 'JCDECAUX' AND activo AND mercado_id IN (%s, %s)", (mco, mlc))
+    jcd = dict(cur.fetchall())
+
+    estado, r = funcion(token_admin, accion="crear", correo=CORREO_TODOS, nombre="Prueba todos", rol="ZB",
+                        todos_los_mercados=True)
+    u = (r or {}).get("usuario") or {}
+    cur.execute("SELECT count(*) FROM usuario_mercados WHERE usuario_id = %s", (u.get("id"),))
+    anotar(estado == 200 and u.get("todos_los_mercados") is True and cur.fetchone()[0] == 0,
+           f"Crear Equipo ZB con «Todos los países»: {estado}, marca {u.get('todos_los_mercados')}, sin mercados guardados")
+
+    estado, r = funcion(token_admin, accion="crear", correo=CORREO_PROV, nombre="Prueba proveedor", rol="PROVEEDOR",
+                        proveedor_id=jcd.get(mco), proveedores=[jcd.get(mco), jcd.get(mlc)])
+    u = (r or {}).get("usuario") or {}
+    cur.execute("SELECT array_agg(proveedor_id ORDER BY proveedor_id) FROM usuario_proveedores WHERE usuario_id = %s", (u.get("id"),))
+    anotar(estado == 200 and cur.fetchone()[0] == sorted([jcd.get(mco), jcd.get(mlc)]),
+           f"Crear Proveedor JCDECAUX en MCO y MLC: {estado} — {(r or {}).get('error') or 'dos proveedores'}")
+    prov_id = u.get("id")
+    if prov_id:
+        estado, r = funcion(token_admin, accion="editar", usuario_id=prov_id, nombre="Prueba proveedor", rol="PROVEEDOR",
+                            proveedor_id=jcd.get(mco), proveedores=[jcd.get(mco)])
+        anotar(estado == 200 and r.get("proveedores") == [jcd.get(mco)] and r.get("acceso_cambio") is True,
+               f"Editar Proveedor: queda solo MCO, cambio de acceso — {estado}")
+
+    estado, r = funcion(token_admin, accion="crear", correo=CORREO_CLI, nombre="Prueba cliente", rol="CLIENTE", mercados=[mco])
+    u = (r or {}).get("usuario") or {}
+    clave = (r or {}).get("clave")
+    anotar(estado == 200 and u.get("vistas") == [], f"Crear Cliente: sin pantallas adicionales por defecto ({u.get('vistas')})")
+    if not u.get("id"):
+        return
+    token_c = entrar(CORREO_CLI, clave)[0]
+    estado, r = http("GET", f"{URL}/rest/v1/v_compras_cliente?select=id&limit=1", token=token_c)
+    anotar(estado == 200 and r == [], f"Cliente sin la pantalla Compras: v_compras_cliente da {len(r or [])} filas")
+    estado, r = funcion(token_admin, accion="editar", usuario_id=u["id"], nombre="Prueba cliente", rol="CLIENTE",
+                        mercados=[mco], vistas=["compras", "inversion"])
+    anotar(estado == 200 and r["usuario"].get("vistas") == ["compras", "inversion"] and r.get("acceso_cambio") is True,
+           f"Editar Cliente: Compras + Inversión — {estado}, {(r or {}).get('sesiones_cerradas')} sesiones cerradas")
+    token_c = entrar(CORREO_CLI, clave)[0]
+    estado, r = http("GET", f"{URL}/rest/v1/v_compras_cliente?select=id,mercado,valor_total&limit=3", token=token_c)
+    anotar(estado == 200 and len(r) == 3 and {x["mercado"] for x in r} == {"MCO"}, f"Con Compras ve compras de MCO: {estado}")
+    estado, r = http("GET", f"{URL}/rest/v1/v_compras_cliente?select=tarifa_bruta&limit=1", token=token_c)
+    anotar(estado >= 400, f"Pedir tarifa_bruta por la API: {estado} (la columna no existe)")
+    estado, r = http("GET", f"{URL}/rest/v1/compras?select=id,tarifa_bruta&limit=1", token=token_c)
+    anotar(estado == 200 and r == [], f"La tabla compras por la API: {r}")
+    estado, r = http("POST", f"{URL}/rest/v1/rpc/fn_inversion_resumen_cliente", {"p_mercado": mco, "p_filtros": {}}, token=token_c)
+    anotar(estado == 200 and (r or {}).get("filas", 0) > 0, f"Inversión del Cliente por la API: {estado}, {(r or {}).get('filas')} filas")
+    estado, r = http("GET", f"{URL}/rest/v1/v_inversion_total_cliente?select=id_ejecucion&mercado_id=eq.{mlc}&limit=1", token=token_c)
+    anotar(estado == 200 and r == [], f"Inversión de MLC (no es suyo): {r}")
 
 
 def editar(cur, token_admin, token_u, admin_id, usuario_id, mco, clave_u, refresh_u):
@@ -524,9 +601,13 @@ def borrar(cur, token_admin, admin_id, usuario_id, clave_u):
 
 
 def main():
+    global correo_libre
     conn = psycopg2.connect()
     conn.autocommit = True
     cur = conn.cursor()
+    cur.execute("SELECT (SELECT count(*) FROM usuarios WHERE lower(correo) = %s) + (SELECT count(*) FROM auth.users WHERE lower(email) = %s)",
+                (CORREO_INVITADO, CORREO_INVITADO))
+    correo_libre = cur.fetchone()[0] == 0
     try:
         flujo(cur)
     except Exception as e:
@@ -537,7 +618,7 @@ def main():
         anotar(not hallazgos, "git grep: ninguna llave secreta (sb_secret_ ni JWT service_role) en archivos ni historial"
                + (f" — {hallazgos}" if hallazgos else ""))
         logins, usuarios, auditoria = limpiar(cur)
-        correos = (CORREO_ADMIN, CORREO_USUARIO, CORREO_INVITADO, CORREO_SIN_LOGIN)
+        correos = CORREOS if correo_libre else tuple(c for c in CORREOS if c != CORREO_INVITADO)
         cur.execute("SELECT (SELECT count(*) FROM usuarios WHERE correo IN %s) + (SELECT count(*) FROM auth.users WHERE email IN %s)",
                     (correos, correos))
         quedan = cur.fetchone()[0]
