@@ -11,8 +11,9 @@ const ROLES_EXTERNOS = ['PROVEEDOR', 'AGENCIA'];
 const ROLES_DASHBOARD = ['ADMIN', 'LECTURA', 'ZB', 'CLIENTE'];
 const esExterno = (usuario) => ROLES_EXTERNOS.includes(usuario.rol);
 const esCliente = (usuario) => usuario.rol === 'CLIENTE';
-// Vistas adicionales del usuario (usuarios.vistas). Hoy solo Cliente: 'materiales'.
-// Es comodidad de navegación: la base decide (fn_tengo_vista, v_materiales_cliente).
+// Vistas adicionales del usuario (usuarios.vistas). Hoy solo Cliente: 'materiales',
+// 'compras' e 'inversion' (catálogo: vistas_catalogo, sql/usuarios_permisos.sql).
+// Es comodidad de navegación: la base decide (fn_tengo_vista y las vistas _cliente).
 const tieneVista = (usuario, vista) => Array.isArray(usuario.vistas) && usuario.vistas.includes(vista);
 
 // Fila de `usuarios` del login actual, o null.
@@ -68,15 +69,16 @@ async function requerirAcceso() {
   return usuario;
 }
 
-// Para Materiales: los internos, como siempre, y el CLIENTE que tiene la vista
-// «materiales» (solo lectura, por v_materiales_cliente). Sin ella, al dashboard.
-async function requerirAccesoMateriales() {
+// Para Materiales, Compras e Inversión: los internos, como siempre, y el CLIENTE
+// que tiene esa vista (solo lectura, por su vista _cliente). Sin ella, al dashboard.
+async function requerirAccesoVista(vista) {
   const { session, usuario } = await usuarioActual();
   if (!session || !usuario) return irA('index.html');
   if (usuario.debe_cambiar_clave || esExterno(usuario)) return irA(paginaDeInicio(usuario));
-  if (esCliente(usuario) && !tieneVista(usuario, 'materiales')) return irA('dashboard.html');
+  if (esCliente(usuario) && !tieneVista(usuario, vista)) return irA('dashboard.html');
   return usuario;
 }
+const requerirAccesoMateriales = () => requerirAccesoVista('materiales');
 
 // Para el dashboard: ADMIN, LECTURA, ZB y CLIENTE. Sin sesión, al login y de
 // vuelta aquí; un externo, al portal. La protección real está en la base
@@ -110,11 +112,12 @@ const NAVEGACION = [
   { clave: 'usuarios',   texto: 'Usuarios',   href: 'usuarios.html', solo: 'ADMIN' },
 ];
 
-// Pestañas de cada quien. El Cliente solo tiene Dashboard y, con la vista, Materiales.
+// Pestañas de cada quien. El Cliente: Dashboard primero y, después, las pantallas
+// que tiene habilitadas (Compras, Materiales, Inversión). Nunca Alertas ni Usuarios.
 function navegacionDe(usuario) {
   if (esCliente(usuario)) {
-    return NAVEGACION.filter(n => n.clave === 'dashboard' || (n.clave === 'materiales' && tieneVista(usuario, 'materiales')))
-      .sort((a, b) => (a.clave === 'dashboard' ? -1 : 1) - (b.clave === 'dashboard' ? -1 : 1));
+    const dashboard = NAVEGACION.filter(n => n.clave === 'dashboard');
+    return [...dashboard, ...NAVEGACION.filter(n => n.clave !== 'dashboard' && tieneVista(usuario, n.clave))];
   }
   return NAVEGACION.filter(n => (!n.solo || n.solo === usuario.rol) && (!n.roles || n.roles.includes(usuario.rol)));
 }

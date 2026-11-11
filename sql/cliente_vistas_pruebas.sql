@@ -231,7 +231,7 @@ BEGIN
         r := r || (ok || '  CHECK: un Equipo ZB no admite vistas adicionales');
     END;
     BEGIN
-        UPDATE public.usuarios SET vistas = '{inversion}' WHERE correo = 'prueba.cli.sin@oasis.invalid';
+        UPDATE public.usuarios SET vistas = '{alertas}' WHERE correo = 'prueba.cli.sin@oasis.invalid';
         r := r || (mal || '  Un Cliente quedó con una vista que no existe');
     EXCEPTION WHEN check_violation THEN
         r := r || (ok || '  CHECK: un Cliente no admite una vista que no existe');

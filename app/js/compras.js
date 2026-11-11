@@ -1,5 +1,12 @@
 // Pantalla de Compras: una fila por compra, equivale a la hoja Flow del Sheets.
 // Lo existente se edita en la tabla; lo nuevo se crea en el panel lateral.
+// El Cliente con la vista «compras» entra aquí en solo lectura: sus filas salen
+// de v_compras_cliente (sql/usuarios_permisos.sql), sin tarifa bruta, descuento
+// ni tarifa neta, y la tabla no muestra esas columnas.
+
+// Lo que el Cliente lee de v_compras_cliente (todas sus columnas).
+const COLUMNAS_CLIENTE_C = 'id, mercado_id, mercado, mercado_nombre, moneda, codigo, campana, campana_taxonomia, proveedor, '
+  + 'tipo_compra, medio, tipo_costo, formato, ubicacion, ciudad, cantidad, valor_total, fecha_inicio, fecha_fin';
 
 const COLUMNAS_COMPRA = [
   'id', 'mercado_id', 'codigo', 'cliente', 'campana_id', 'proveedor_id',
@@ -451,7 +458,7 @@ function mensajeError(error) {
 // ------------------------------------------------------------------ App
 
 async function iniciar() {
-  const usuario = await requerirAcceso();
+  const usuario = await requerirAccesoVista('compras');
   pintarBarra(document.getElementById('barra'), usuario, 'compras');
 
   createApp({
@@ -462,6 +469,7 @@ async function iniciar() {
       catalogos: { tiposCompra: [], tiposCosto: [] },
       campanasNuevas: {},      // mercado_id -> taxonomías escritas en esta sesión
       usuario,
+      esCliente: esCliente(usuario),   // solo lectura por v_compras_cliente, sin tarifas
       cargando: true,
       errorCarga: '',
       avisoPedido: '',
@@ -476,7 +484,7 @@ async function iniciar() {
     }),
 
     computed: {
-      soloLectura() { return this.usuario.rol === 'LECTURA'; },
+      soloLectura() { return this.usuario.rol === 'LECTURA' || this.esCliente; },
 
       misMercados() { return this.mercados.filter(m => this.misMercadoIds.includes(m.id)); },
       mercadosPorId() { return new Map(this.mercados.map(m => [m.id, m])); },
@@ -498,6 +506,11 @@ async function iniciar() {
 
       opcionesMes() { return this.meses.map(m => ({ valor: m, etiqueta: this.nombreMes(m) })); },
       opcionesTipoCosto() {
+        if (this.esCliente) {   // no lee el catálogo: los tipos que traen sus compras
+          const tipos = new Set(this.filas.filter(r => r.tipo_costo && (!this.filtros.mercado || r.mercado_id === this.filtros.mercado))
+            .map(r => r.tipo_costo));
+          return [...tipos].sort().map(t => ({ valor: t, etiqueta: t }));
+        }
         return tiposCostoPara(this.catalogos.tiposCosto, this.codigoFiltroMercado).map(t => ({ valor: t, etiqueta: t }));
       },
       // Opciones de campaña por mercado; se arman una vez (la tabla tiene miles de filas).
@@ -584,7 +597,8 @@ async function iniciar() {
 
       errores() {
         const m = new Map();
-        for (const r of this.filas) m.set(r._k, validar(r, this.ctx));
+        // El Cliente no captura y no ve las tarifas: nada que validar ni marcar.
+        for (const r of this.filas) m.set(r._k, this.esCliente ? {} : validar(r, this.ctx));
         return m;
       },
 
@@ -675,6 +689,7 @@ async function iniciar() {
       tiposCostoDe(r) { return tiposCostoPara(this.catalogos.tiposCosto, this.codigoMercado(r.mercado_id), r.tipo_costo); },
       campanaOoh(mercadoId) { const m = this.mercadosPorId.get(mercadoId); return m ? m.campana_ooh_id : null; },
       nombreCampana(r) {
+        if (this.esCliente) return r.campana_texto || '';   // el nombre ya viene de v_compras_cliente
         const c = this.campanasPorId.get(r.campana_id);
         return c ? c.nombre_unico : (r.campana_taxonomia || r.campana_texto || '');
       },
@@ -907,7 +922,41 @@ async function iniciar() {
         if (tr) tr.scrollIntoView({ block: 'center' });
       },
 
+      // El Cliente: todo sale de v_compras_cliente. Con esas filas se arman los
+      // mercados y proveedores que usa la pantalla (ids propios de esta página).
+      async cargarCliente() {
+        try {
+          const vista = await traerTodo(() => sb.from('v_compras_cliente').select(COLUMNAS_CLIENTE_C).order('mercado_id').order('codigo'));
+          const mercados = new Map(), proveedores = new Map();
+          this.filas = vista.map(f => {
+            if (!mercados.has(f.mercado_id)) {
+              mercados.set(f.mercado_id, { id: f.mercado_id, codigo: f.mercado, nombre: f.mercado_nombre, moneda: f.moneda });
+            }
+            const kp = `${f.mercado_id}|${f.proveedor}`;
+            if (f.proveedor && !proveedores.has(kp)) {
+              proveedores.set(kp, { id: proveedores.size + 1, mercado_id: f.mercado_id, nombre: f.proveedor, activo: true });
+            }
+            return desdeBase({
+              ...f, cliente: null, campana_id: null, campana_texto: f.campana,
+              proveedor_id: f.proveedor ? proveedores.get(kp).id : null,
+              tiempo: null, tarifa_bruta: null, descuento_pct: null, tarifa_neta: null, nro_semanas: null,
+              valor_total_manual: false,
+            });
+          });
+          this.mercados = [...mercados.values()].sort((a, b) => a.id - b.id);
+          this.misMercadoIds = this.mercados.map(m => m.id);
+          this.proveedores = [...proveedores.values()].sort((a, b) => a.nombre.localeCompare(b.nombre));
+          this.filtros.mercado = mercadoInicial(this.misMercados, []);
+        } catch (e) {
+          console.error(e);
+          this.errorCarga = 'No se pudieron cargar las compras: ' + (e.message || e);
+        } finally {
+          this.cargando = false;
+        }
+      },
+
       async cargar() {
+        if (this.esCliente) return this.cargarCliente();
         try {
           const [mercados, mis, propios, campanas, proveedores, compras, catalogos] = await Promise.all([
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre, activo, campana_ooh_id, moneda').order('id')),

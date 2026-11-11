@@ -2,7 +2,8 @@
 // pantalla Usuarios. Solo ADMIN activo; cualquier otro recibe 403.
 //
 // POST { accion, ... } con la sesión del ADMIN:
-//   crear        { correo, nombre, rol, proveedor_id?, mercados?, vistas?, invitar? }
+//   crear        { correo, nombre, rol, proveedor_id?, proveedores?, mercados?,
+//                  todos_los_mercados?, vistas?, invitar? }
 //                -> { usuario, clave } o, con invitar: true,
 //                   { usuario, clave: null, invitacion: { enviada, error } }
 //                Con invitar, Auth crea el login y manda el correo de invitación
@@ -23,8 +24,12 @@
 //   desactivar   { usuario_id }                                     -> { usuario }
 //   reactivar    { usuario_id }                                     -> { usuario }
 //   nueva_clave  { usuario_id }                                     -> { usuario, clave }
-//   editar       { usuario_id, nombre, rol, proveedor_id?, mercados?, vistas? }
-//                -> { usuario, mercados, acceso_cambio, sesiones_cerradas }
+//   editar       { usuario_id, nombre, rol, proveedor_id?, proveedores?, mercados?,
+//                  todos_los_mercados?, vistas? }
+//                -> { usuario, mercados, proveedores, acceso_cambio, sesiones_cerradas }
+//                proveedores: las filas de proveedores (una por país) de un
+//                Proveedor; todos_los_mercados: la marca «Todos los países»
+//                (sql/usuarios_permisos.sql). Sin mandarlos, como antes.
 //                El correo no se edita. Si cambia el acceso (rol, mercados o
 //                proveedor), fn_admin_editar_usuario cierra en la base las
 //                sesiones de ese login: no hace falta la llave secreta.
@@ -133,7 +138,7 @@ async function rpc<T>(sb: SupabaseClient, fn: string, args: Record<string, unkno
 
 async function leerUsuario(sb: SupabaseClient, id: number): Promise<Usuario> {
   const { data, error } = await sb.from("usuarios")
-    .select("id, correo, nombre, rol, proveedor_id, activo, auth_user_id, debe_cambiar_clave, vistas")
+    .select("id, correo, nombre, rol, proveedor_id, activo, auth_user_id, debe_cambiar_clave, vistas, todos_los_mercados")
     .eq("id", id).maybeSingle();
   if (error) throw desdePostgres(error);
   if (!data) throw new Rechazo(404, `El usuario ${id} no existe`);
@@ -225,7 +230,9 @@ Deno.serve(async (req) => {
         p_rol: cuerpo.rol ?? null,
         p_proveedor_id: cuerpo.proveedor_id ?? null,
         p_mercados: Array.isArray(cuerpo.mercados) ? cuerpo.mercados : [],
-        p_vistas: Array.isArray(cuerpo.vistas) ? cuerpo.vistas : null,   // vistas adicionales (Cliente: materiales)
+        p_vistas: Array.isArray(cuerpo.vistas) ? cuerpo.vistas : null,   // pantallas del Cliente (vistas_catalogo)
+        p_todos: cuerpo.todos_los_mercados === true,
+        p_proveedores: Array.isArray(cuerpo.proveedores) ? cuerpo.proveedores : null,
       });
       if (cuerpo.invitar === true) {
         // Si el correo no sale, el usuario se queda (sin login): la pantalla
@@ -270,7 +277,7 @@ Deno.serve(async (req) => {
 
     // ---- editar nombre, rol, mercados y proveedor
     if (accion === "editar") {
-      const r = await rpc<{ mercados: number[]; acceso_cambio: boolean; sesiones_cerradas: number }>(
+      const r = await rpc<{ mercados: number[]; proveedores: number[]; acceso_cambio: boolean; sesiones_cerradas: number }>(
         sb, "fn_admin_editar_usuario", {
           p_usuario_id: id,
           p_nombre: cuerpo.nombre ?? null,
@@ -278,11 +285,14 @@ Deno.serve(async (req) => {
           p_proveedor_id: cuerpo.proveedor_id ?? null,
           p_mercados: Array.isArray(cuerpo.mercados) ? cuerpo.mercados : [],
           p_vistas: Array.isArray(cuerpo.vistas) ? cuerpo.vistas : null,   // null = no tocarlas
+          p_todos: typeof cuerpo.todos_los_mercados === "boolean" ? cuerpo.todos_los_mercados : null,   // null = como estaba
+          p_proveedores: Array.isArray(cuerpo.proveedores) ? cuerpo.proveedores : null,
         });
       const usuario = await leerUsuario(sb, id);
       return responder({
         usuario,
         mercados: r.mercados,
+        proveedores: r.proveedores,
         acceso_cambio: r.acceso_cambio,
         sesiones_cerradas: r.sesiones_cerradas,
       });

@@ -1,6 +1,9 @@
 // Pantalla de Inversión: las tres vistas de reparto (total, semanal, diaria), de
 // solo lectura. Cada pestaña lee su vista tal cual; los filtros son compartidos.
 // La única escritura es la fecha de corte, y solo para ADMIN.
+// El Cliente con la vista «inversion» entra aquí en solo lectura: lee sus
+// propias vistas y funciones (_cliente, sql/usuarios_permisos.sql), solo de sus
+// mercados; no ve la fecha de corte editable ni el catálogo.
 
 // Título y tipo de cada columna de las vistas. El tipo decide formato y alineación.
 const COLUMNAS_INV = {
@@ -39,21 +42,21 @@ const COLUMNAS_INV = {
 // salen de fn_inversion_resumen, que devuelve agregados, no filas.
 const PESTANAS = {
   total: {
-    titulo: 'Total', vista: 'v_inversion_total', fn: 'fn_inversion_total',
+    titulo: 'Total', vista: 'v_inversion_total', fn: 'fn_inversion_total', vistaCliente: 'v_inversion_total_cliente',
     columnas: ['site', 'bu', 'proveedor', 'tipo_costo', 'formato', 'valor_total', 'id', 'id_ejecucion',
       'campana', 'sub_campana', 'fecha_inicio', 'fecha_fin', 'dias', 'pct_participacion',
       'costo_proyectado', 'costo_ejecutado', 'mes_compra', 'moneda'],
     orden: ['site', 'id_ejecucion'],
   },
   semanal: {
-    titulo: 'Semanal', vista: 'v_inversion_semanal', fn: 'fn_inversion_semanal',
+    titulo: 'Semanal', vista: 'v_inversion_semanal', fn: 'fn_inversion_semanal', vistaCliente: 'v_inversion_semanal_cliente',
     columnas: ['site', 'bu', 'year', 'month', 'week', 'proveedor', 'tipo_costo', 'formato', 'valor_total',
       'id', 'id_ejecucion', 'campana', 'sub_campana', 'fecha_inicio', 'fecha_fin', 'dias',
       'costo_proyectado', 'costo_ejecutado', 'mes_compra', 'moneda'],
     orden: ['site', 'id_ejecucion', 'year', 'month', 'week'],
   },
   diaria: {
-    titulo: 'Diaria', vista: 'v_inversion_diaria', fn: 'fn_inversion_filtrada', enServidor: true,
+    titulo: 'Diaria', vista: 'v_inversion_diaria', fn: 'fn_inversion_filtrada', fnCliente: 'fn_inversion_filtrada_cliente', enServidor: true,
     columnas: ['site', 'bu', 'year', 'month', 'week', 'date', 'proveedor', 'tipo_costo', 'formato',
       'valor_total', 'id', 'id_ejecucion', 'campana', 'sub_campana', 'pct_participacion',
       'costo_proyectado', 'estado', 'costo_ejecutado', 'mes_compra', 'moneda'],
@@ -108,7 +111,7 @@ async function traerTodoParalelo(consulta) {
 }
 
 async function iniciar() {
-  const usuario = await requerirAcceso();
+  const usuario = await requerirAccesoVista('inversion');
   pintarBarra(document.getElementById('barra'), usuario, 'inversion');
 
   createApp({
@@ -118,6 +121,7 @@ async function iniciar() {
       PESTANAS,
       COLUMNAS_INV,
       usuario,
+      esCliente: esCliente(usuario),
       errorCarga: '',
       mercados: [],
       misMercadoIds: [],
@@ -191,7 +195,12 @@ async function iniciar() {
         });
       },
       opcionesProveedor() { return this.lista(this.opcionesDe.proveedores); },
-      opcionesTipoCosto() { return tiposCostoPara(this.catalogoCosto, this.codigoFiltro).map(t => ({ valor: t, etiqueta: t })); },
+      opcionesTipoCosto() {
+        if (this.esCliente) {   // no lee el catálogo: los tipos que trae su Total
+          return [...new Set(this.datos.total.filas.map(r => r.tipo_costo).filter(Boolean))].sort().map(t => ({ valor: t, etiqueta: t }));
+        }
+        return tiposCostoPara(this.catalogoCosto, this.codigoFiltro).map(t => ({ valor: t, etiqueta: t }));
+      },
       opcionesSubCampana() {
         return [{ valor: SIN_SUB_INV, etiqueta: 'Sin sub campaña' }, ...this.lista(this.opcionesDe.sub_campanas)];
       },
@@ -303,6 +312,7 @@ async function iniciar() {
       // vuelve a pedir todo.
       'filtros.mercado'(id, antes) {
         guardarMercadoActivo(id ? this.mercadosPorId.get(id).codigo : '');
+        if (this.esCliente && id) this.corte.valor = this.mercadosPorId.get(id).corte || null;   // corte de su mercado
         if (!id || id === antes) return;
         Object.assign(this.filtros, { meses: [], proveedores: [], tiposCosto: [], subCampanas: [], campanas: [] });
         this.cargarVistas();
@@ -465,9 +475,17 @@ async function iniciar() {
         d.cargando = true;
         d.error = '';
         try {
+          const columnas = [...p.columnas, 'campana_grupo'].join(', ');
           const filas = await traerTodoParalelo((opciones) => {
+            // El Cliente lee su vista (un mercado a la vez); los demás, la función interna.
+            if (this.esCliente) {
+              if (opciones) return sb.from(p.vistaCliente).select('mercado_id', opciones).eq('mercado_id', mercado);
+              let q = sb.from(p.vistaCliente).select(columnas).eq('mercado_id', mercado);
+              for (const o of p.orden) q = q.order(o);
+              return q;
+            }
             if (opciones) return sb.rpc(p.fn, {}, { get: true, ...opciones }).eq('mercado_id', mercado);
-            let q = sb.rpc(p.fn, {}, { get: true }).select([...p.columnas, 'campana_grupo'].join(', ')).eq('mercado_id', mercado);
+            let q = sb.rpc(p.fn, {}, { get: true }).select(columnas).eq('mercado_id', mercado);
             for (const o of p.orden) q = q.order(o);
             return q;
           });
@@ -483,7 +501,7 @@ async function iniciar() {
       // La Diaria: una página, ya filtrada y ordenada en la base, con el total.
       consultaDiaria(opciones) {
         const p = PESTANAS.diaria;
-        let q = sb.rpc(p.fn, { p_mercado: this.filtros.mercado, p_filtros: this.filtrosServidor }, opciones)
+        let q = sb.rpc(this.esCliente ? p.fnCliente : p.fn, { p_mercado: this.filtros.mercado, p_filtros: this.filtrosServidor }, opciones)
           .select(p.columnas.join(', '));
         for (const o of p.orden) q = q.order(o);
         return q;
@@ -514,7 +532,7 @@ async function iniciar() {
         const turno = r.turno = (r.turno || 0) + 1;
         r.cargando = true;
         r.error = '';
-        const { data, error } = await sb.rpc('fn_inversion_resumen',
+        const { data, error } = await sb.rpc(this.esCliente ? 'fn_inversion_resumen_cliente' : 'fn_inversion_resumen',
           { p_mercado: this.filtros.mercado, p_filtros: this.filtrosServidor });
         if (turno !== r.turno) return;
         if (error) {
@@ -544,7 +562,24 @@ async function iniciar() {
         else this.datos.diaria.cargando = false;
       },
 
+      // El Cliente: sus mercados (con moneda y fecha de corte) de v_mercados_cliente.
+      async cargarCliente() {
+        try {
+          const mercados = await traerTodo(() => sb.from('v_mercados_cliente').select('id, codigo, nombre, moneda, corte').order('id'));
+          this.mercados = mercados;
+          this.misMercadoIds = mercados.map(m => m.id);
+          const inicial = mercadoInicial(this.misMercados, []) || (this.misMercados[0] || {}).id || '';
+          this.corte = { valor: inicial ? (this.mercadosPorId.get(inicial).corte || null) : null, cargado: true };
+          this.filtros.mercado = inicial;
+          if (!this.misMercados.length) this.errorCarga = 'Tu usuario no tiene mercados con inversión. Pide a un administrador que te los asigne.';
+        } catch (e) {
+          console.error(e);
+          this.errorCarga = 'No se pudo cargar la pantalla: ' + (e.message || e);
+        }
+      },
+
       async cargar() {
+        if (this.esCliente) return this.cargarCliente();
         try {
           const [mercados, mis, propios, corte, catalogos] = await Promise.all([
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre, moneda').order('id')),
