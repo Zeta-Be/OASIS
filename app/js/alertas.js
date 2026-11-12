@@ -113,22 +113,36 @@ async function iniciar() {
           if (!porTipo.has(a.alerta)) porTipo.set(a.alerta, []);
           porTipo.get(a.alerta).push(a);
         }
-        // La card del glosario se queda aunque no haya alertas, si hay
-        // campañas reconocidas o equivalencias que mostrar.
-        if (!porTipo.has('campaña fuera del glosario') && (this.reconocidas.length || this.equivalenciasVisibles.length)) {
-          porTipo.set('campaña fuera del glosario', []);
-        }
         const conocidos = TIPOS_ALERTA.map(t => t.alerta);
         const extra = [...porTipo.keys()].filter(t => !conocidos.includes(t))
           .map(t => ({ alerta: t, titulo: t, destino: 'material', explica: '' }));
+        // Solo lo pendiente: un tipo sin casos no tiene card. Las de más casos,
+        // primero (con empate, el orden de TIPOS_ALERTA).
         return [...TIPOS_ALERTA, ...extra]
           .filter(t => porTipo.has(t.alerta))
-          .map(t => ({
+          .map((t, orden) => ({
             ...t,
+            orden,
             casos: porTipo.get(t.alerta).sort((a, b) =>
               a.mercado.localeCompare(b.mercado) || a.referencia.localeCompare(b.referencia)),
-          }));
+          }))
+          .sort((a, b) => b.casos.length - a.casos.length || a.orden - b.orden);
       },
+      // Posición de cada card (CSS order): las de más pendientes primero, también
+      // duplicados y taxonomías por confirmar, que tienen card propia.
+      ordenCards() {
+        const cards = [
+          { clave: 'duplicados', n: this.duplicadosVisibles.length, orden: -2 },
+          { clave: 'por-confirmar', n: this.porConfirmarVisibles.length, orden: -1 },
+          ...this.grupos.map(g => ({ clave: g.alerta, n: g.casos.length, orden: g.orden })),
+        ].sort((a, b) => b.n - a.n || a.orden - b.orden);
+        return Object.fromEntries(cards.map((c, i) => [c.clave, i]));
+      },
+      // Nada pendiente en el mercado: ni alertas, ni duplicados, ni taxonomías por confirmar.
+      sinPendientes() {
+        return !this.grupos.length && !this.duplicadosVisibles.length && !this.porConfirmarVisibles.length;
+      },
+      nombreMercado() { const m = this.mercadosPorId.get(this.filtros.mercado); return m ? m.codigo : 'tus mercados'; },
       puedeEscribir() { return ['PLANNING', 'ZB', 'ADMIN'].includes(this.usuario.rol); },
       // Proveedores primero (se unifican antes que los soportes), luego por confianza.
       porConfirmarVisibles() {
@@ -173,6 +187,7 @@ async function iniciar() {
           .sort((a, b) => b.compras - a.compras || a.taxonomia.localeCompare(b.taxonomia));
       },
       comprasReconocidas() { return this.reconocidas.reduce((s, x) => s + x.compras, 0); },
+      hayResuelto() { return this.reconocidas.length > 0 || this.equivalenciasVisibles.length > 0; },
       equivalenciasVisibles() {
         return this.equivalencias.filter(e => !this.filtros.mercado || e.mercado_id === this.filtros.mercado);
       },
@@ -438,12 +453,14 @@ async function iniciar() {
           this.misMercadoIds = (mis.data || []).map(x => (typeof x === 'object' ? Object.values(x)[0] : x)).map(Number);
           this.alertas = alertas;
           this.ubicaciones = new Map(compras.map(c => [c.id, c.ubicacion]));
-          await this.cargarDuplicados();
-          await this.cargarPorConfirmar();
-          await this.cargarGlosario();
-          if (this.esAdmin) {
-            this.glosario = await traerTodo(() => sb.from('campanas').select('mercado_id, nombre_unico').order('id'));
-          }
+          // En paralelo: la pantalla no pinta nada hasta tenerlas todas.
+          const [, , , glosario] = await Promise.all([
+            this.cargarDuplicados(),
+            this.cargarPorConfirmar(),
+            this.cargarGlosario(),
+            this.esAdmin ? traerTodo(() => sb.from('campanas').select('mercado_id, nombre_unico').order('id')) : [],
+          ]);
+          this.glosario = glosario;
           // Alertas es por mercado: sin «Todos». Sin mercado recordado, el propio o el primero.
           const inicial = mercadoInicial(this.misMercados, propios.map(p => p.mercado_id));
           this.filtros.mercado = inicial || (this.misMercados[0] || {}).id || '';

@@ -29,36 +29,42 @@
       </div>
     </div>
 
-    <div class="filtros filtros-sueltos filtros-alertas">
-      <div class="campo">
-        <label for="f-mercado">Mercado</label>
-        <select id="f-mercado" v-model="filtros.mercado" :disabled="misMercados.length === 1">
-          <option v-for="m in misMercados" :key="m.id" :value="m.id">{{ m.codigo }} · {{ m.nombre }}</option>
-        </select>
-      </div>
-    </div>
-
-    <section v-if="!cargando" class="card duplicados">
-      <div class="card-cab">
-        <h2>Posibles duplicados<span v-if="duplicadosVisibles.length" class="cuenta">{{ duplicadosVisibles.length }}</span></h2>
-        <div v-if="puedeEscribir" class="acciones-cab">
-          <button type="button" class="btn p" :disabled="analizando || !filtros.mercado" @click="analizar"
-                  :title="filtros.mercado ? '' : 'Elige un mercado para analizar'">
-            {{ analizando ? 'Analizando…' : 'Analizar' }}
-          </button>
+    <div class="cab-alertas">
+      <div class="filtros filtros-sueltos filtros-alertas">
+        <div class="campo">
+          <label for="f-mercado">Mercado</label>
+          <select id="f-mercado" v-model="filtros.mercado" :disabled="misMercados.length === 1">
+            <option v-for="m in misMercados" :key="m.id" :value="m.id">{{ m.codigo }} · {{ m.nombre }}</option>
+          </select>
         </div>
+      </div>
+      <!-- Buscar posibles duplicados: la card solo aparece si hay propuestas -->
+      <button v-if="puedeEscribir && !cargando" type="button" class="btn btn-analizar" :disabled="analizando || !filtros.mercado"
+              @click="analizar"
+              title="La IA busca proveedores y soportes escritos de formas distintas. Nada cambia hasta que alguien unifica.">
+        {{ analizando ? 'Buscando duplicados…' : 'Buscar duplicados' }}
+      </button>
+    </div>
+    <div v-if="analizando" class="analizando analizando-suelto" role="status">
+      <span class="barra-actividad"></span>
+      Buscando proveedores y soportes escritos de formas distintas en {{ codigoFiltro }}. Suele tardar entre 30 segundos y 2 minutos.
+    </div>
+    <div v-if="dup.mensaje && !duplicadosVisibles.length" class="alerta" :class="dup.clase" style="margin-bottom:14px">{{ dup.mensaje }}</div>
+    <div v-if="eqMensaje" class="alerta ok" style="margin-bottom:14px" role="status">{{ eqMensaje }}</div>
+
+    <!-- Cards de pendientes; las ordena ordenCards (más pendientes primero) -->
+    <div class="pendientes">
+    <section v-if="!cargando && duplicadosVisibles.length" class="card duplicados" :style="{ order: ordenCards.duplicados }">
+      <div class="card-cab">
+        <h2>Posibles duplicados<span class="cuenta">{{ duplicadosVisibles.length }}</span></h2>
       </div>
       <p class="explica">
         La IA busca proveedores y soportes escritos de formas distintas. Nada cambia hasta que alguien unifica.
         Unifica primero los proveedores: un soporte solo se agrupa con otro del mismo proveedor.
       </p>
-      <div v-if="analizando" class="analizando" role="status">
-        <span class="barra-actividad"></span>
-        Analizando proveedores y soportes de {{ codigoFiltro }}. Suele tardar entre 30 segundos y 2 minutos.
-      </div>
       <div v-if="dup.mensaje" class="alerta" :class="dup.clase" style="margin:10px 14px 0">{{ dup.mensaje }}</div>
 
-      <ul v-if="duplicadosVisibles.length" class="lista-duplicados">
+      <ul class="lista-duplicados">
         <li v-for="d in duplicadosVisibles" :key="d.id">
           <div class="dup-cab">
             <span class="pill" :class="CLASE_CONFIANZA[d.confianza]">{{ d.confianza }}</span>
@@ -87,19 +93,44 @@
           <div v-if="d._error" class="alerta error" style="margin-top:8px">{{ d._error }}</div>
         </li>
       </ul>
-      <div v-else-if="!analizando" class="vacio">
-        Sin propuestas pendientes{{ codigoFiltro ? ' en ' + codigoFiltro : '' }}.{{ puedeEscribir ? ' «Analizar» las busca.' : '' }}
+    </section>
+
+    <!-- Alias provisionales de campañas: la carga los usa para no frenarse; aquí se confirman -->
+    <section v-if="!cargando && porConfirmarVisibles.length" class="card grupo-alertas" :style="{ order: ordenCards['por-confirmar'] }">
+      <div class="card-cab">
+        <h2>Taxonomías por confirmar<span class="cuenta">{{ porConfirmarVisibles.length }}</span></h2>
       </div>
+      <p class="explica">Textos del Flow que OASIS traduce con una taxonomía provisional. Confirma la taxonomía o corrígela: la corrección re-apunta las compras ya cargadas.</p>
+      <ul class="lista-taxonomia">
+        <li v-for="a in porConfirmarVisibles" :key="a.id">
+          <div class="tax-cab">
+            <span class="tax-texto mono">{{ a.texto_flow }}</span>
+            <span class="tax-n">{{ a.bu }} · desde el {{ fechaCorta(a.creado_en) }}</span>
+          </div>
+          <p v-if="a.nota" class="tax-nota">{{ a.nota }}</p>
+          <form v-if="puedeCorregir" class="tax-form" @submit.prevent="confirmarTaxonomia(a)">
+            <div class="campo" :class="{ err: a._error }">
+              <label :for="'pc-' + a.id">Taxonomía</label>
+              <input :id="'pc-' + a.id" v-model="a._valor" class="mono" autocomplete="off" :disabled="a._ocupado">
+            </div>
+            <button type="submit" class="btn p" :disabled="a._ocupado">{{ a._ocupado ? 'Guardando…' : 'Confirmar' }}</button>
+          </form>
+          <div v-else class="tax-compras mono">{{ a.taxonomia }}</div>
+          <div v-if="a._error" class="campo-error">{{ a._error }}</div>
+        </li>
+      </ul>
+      <div v-if="pcMensaje" class="tax-ok glos-mensaje">{{ pcMensaje }}</div>
     </section>
 
     <div v-if="cargando" class="card"><div class="vacio">Cargando alertas…</div></div>
-    <div v-else-if="!grupos.length && !errorCarga" class="alerta ok sin-alertas">
-      Sin alertas{{ codigoFiltro ? ' en ' + codigoFiltro : '' }}: la captura está completa.
+    <div v-else-if="sinPendientes && !errorCarga" class="alerta ok sin-alertas">
+      Sin pendientes en {{ nombreMercado }}.
     </div>
 
-    <section v-for="g in grupos" :key="g.alerta" class="card grupo-alertas">
+    <template v-if="!cargando">
+    <section v-for="g in grupos" :key="g.alerta" class="card grupo-alertas" :style="{ order: ordenCards[g.alerta] }">
       <div class="card-cab">
-        <h2>{{ g.titulo }}<span class="cuenta" :class="{ larga: g.destino === 'glosario', cero: !g.casos.length }">{{ cuentaDe(g) }}</span></h2>
+        <h2>{{ g.titulo }}<span class="cuenta" :class="{ larga: g.destino === 'glosario' }">{{ cuentaDe(g) }}</span></h2>
       </div>
       <p v-if="g.explica" class="explica">{{ g.explica }}</p>
 
@@ -132,7 +163,7 @@
       <!-- Campaña fuera del glosario: una fila por campaña; sus compras, desplegables.
            ADMIN puede declarar una equivalencia manual con una familia del glosario. -->
       <template v-else-if="g.destino === 'glosario'">
-        <ul v-if="g.casos.length" class="lista-taxonomia">
+        <ul class="lista-taxonomia">
           <li v-for="t in gruposTaxonomia(g.casos)" :key="t.texto">
             <details class="glos">
               <summary class="tax-cab">
@@ -158,42 +189,9 @@
             <div v-if="formEq(t.texto).error" class="campo-error">{{ formEq(t.texto).error }}</div>
           </li>
         </ul>
-        <div v-else class="vacio glos-vacio">Ninguna campaña queda fuera del glosario{{ codigoFiltro ? ' en ' + codigoFiltro : '' }}.</div>
         <datalist v-if="esAdmin" id="glosario-mercado">
           <option v-for="n in glosarioDelMercado" :key="n" :value="n"></option>
         </datalist>
-        <div v-if="eqMensaje" class="tax-ok glos-mensaje">{{ eqMensaje }}</div>
-
-        <!-- Solo informativo: lo que OASIS reconoce sin que esté tal cual en el glosario -->
-        <details v-if="reconocidas.length" class="glos glos-reconocidas">
-          <summary>
-            <span class="glos-sub">Reconocidas por familia</span>
-            <span class="tax-n">{{ plural(reconocidas.length, 'campaña', 'campañas') }} · {{ plural(comprasReconocidas, 'compra', 'compras') }}</span>
-            <span class="glos-ver">ver detalle</span>
-          </summary>
-          <p class="explica">No salen como alerta: su nombre corto coincide con una campaña del glosario quitando la fase (PRE, DUR, EXT) o la numeración final, con el año escrito con 2 o 4 dígitos, o por una equivalencia manual. La compra conserva su campaña tal como viene del Flow; OASIS no le asigna una fase.</p>
-          <table class="tabla-reconocidas">
-            <thead><tr><th>Campaña de la compra</th><th>Cómo</th><th>Glosario</th><th class="num">Compras</th></tr></thead>
-            <tbody>
-              <tr v-for="x in reconocidas" :key="x.mercado_id + x.taxonomia">
-                <td class="mono">{{ x.taxonomia }}</td>
-                <td>{{ REGLA_TEXTO[x.regla] || x.regla }}<span class="mono"> · {{ x.familia }}</span></td>
-                <td class="mono">{{ (x.glosario || []).join(' / ') }}</td>
-                <td class="num mono">{{ x.compras.toLocaleString('es-CO') }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </details>
-
-        <div v-if="equivalenciasVisibles.length" class="glos-equivalencias">
-          <span class="glos-sub">Equivalencias manuales</span>
-          <ul>
-            <li v-for="e in equivalenciasVisibles" :key="e.id">
-              <span class="mono">{{ e.texto }} ({{ e.bu }}) → {{ e.familia }}</span>
-              <button v-if="esAdmin" type="button" class="btn-link" @click="borrarEquivalencia(e)">Quitar</button>
-            </li>
-          </ul>
-        </div>
       </template>
 
       <ul v-else class="lista-alertas">
@@ -211,6 +209,42 @@
         </li>
       </ul>
     </section>
+
+    </template>
+    </div>
+
+    <!-- Solo informativo, cerrado por defecto: lo que OASIS validó por su cuenta. No cuenta como pendiente. -->
+    <details v-if="!cargando && hayResuelto" class="card resuelto">
+      <summary class="card-cab">
+        <h2>Resuelto automáticamente</h2>
+        <span class="tax-n">{{ plural(reconocidas.length, 'campaña', 'campañas') }} · {{ plural(comprasReconocidas, 'compra', 'compras') }}</span>
+        <span class="glos-ver">ver detalle</span>
+      </summary>
+      <div v-if="reconocidas.length" class="resuelto-bloque">
+        <span class="glos-sub">Reconocidas por familia</span>
+        <p class="explica">No salen como alerta: su nombre corto coincide con una campaña del glosario quitando la fase (PRE, DUR, EXT) o la numeración final, con el año escrito con 2 o 4 dígitos, o por una equivalencia manual. La compra conserva su campaña tal como viene del Flow; OASIS no le asigna una fase.</p>
+        <table class="tabla-reconocidas">
+          <thead><tr><th>Campaña de la compra</th><th>Cómo</th><th>Glosario</th><th class="num">Compras</th></tr></thead>
+          <tbody>
+            <tr v-for="x in reconocidas" :key="x.mercado_id + x.taxonomia">
+              <td class="mono">{{ x.taxonomia }}</td>
+              <td>{{ REGLA_TEXTO[x.regla] || x.regla }}<span class="mono"> · {{ x.familia }}</span></td>
+              <td class="mono">{{ (x.glosario || []).join(' / ') }}</td>
+              <td class="num mono">{{ x.compras.toLocaleString('es-CO') }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-if="equivalenciasVisibles.length" class="resuelto-bloque">
+        <span class="glos-sub">Equivalencias manuales</span>
+        <ul class="lista-equivalencias">
+          <li v-for="e in equivalenciasVisibles" :key="e.id">
+            <span class="mono">{{ e.texto }} ({{ e.bu }}) → {{ e.familia }}</span>
+            <button v-if="esAdmin" type="button" class="btn-link" @click="borrarEquivalencia(e)">Quitar</button>
+          </li>
+        </ul>
+      </div>
+    </details>
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>

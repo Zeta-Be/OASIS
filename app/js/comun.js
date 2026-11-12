@@ -142,7 +142,10 @@ function pintarBarra(contenedor, usuario, activa) {
   contenedor.querySelector('.nombre').textContent = usuario.nombre;
   contenedor.querySelector('.rol').textContent = esCliente(usuario) ? 'CLIENTE · SOLO LECTURA' : usuario.rol;
   contenedor.querySelector('.salir').addEventListener('click', salir);
-  actualizarAlertasBarra(leerMercadoActivo());
+  // El mercado de la URL (?mercado=MLA) manda sobre el último elegido: así la
+  // barra no muestra unos segundos el número de otro mercado mientras carga.
+  const enUrl = new URLSearchParams(window.location.search).get('mercado');
+  actualizarAlertasBarra(enUrl !== null ? enUrl : leerMercadoActivo());
 }
 
 // ------------------------------------------------------------------ Mercado activo
