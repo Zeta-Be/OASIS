@@ -302,3 +302,34 @@ button.corte.editable:focus-visible { outline: 2px solid var(--k); outline-offse
 .tax-form .campo.err input { background: var(--err-wash); border-color: var(--err); box-shadow: inset 0 -2px 0 var(--err); }
 .tax-form .btn { height: 32px; padding: 0 14px; }
 .tax-ok { color: var(--ok); font-size: 11.5px; margin-top: 4px; }
+
+/* Campaña fuera del glosario: la fila es el resumen; las compras se despliegan */
+.glos > summary { cursor: pointer; list-style: none; }
+.glos > summary::-webkit-details-marker { display: none; }
+.glos-ver { font-size: 11.5px; color: var(--ink-soft); text-decoration: underline; text-underline-offset: 2px; }
+.glos-ver::after { content: ' ▸'; text-decoration: none; display: inline-block; margin-left: 2px; }
+.glos[open] .glos-ver::after { content: ' ▾'; }
+.glos > summary:focus-visible { outline: 2px solid var(--y); outline-offset: 2px; }
+.grupo-alertas .card-cab h2 .cuenta.larga { font-size: 15px; }
+.grupo-alertas .card-cab h2 .cuenta.cero { color: var(--muted); }
+.glos-vacio { padding: 12px 14px; }
+.glos-mensaje { padding: 0 14px 8px; }
+.glos-sub { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-soft); }
+.glos-reconocidas { margin: 4px 14px 12px; padding-top: 10px; border-top: 1px solid var(--rule); }
+.glos-reconocidas > summary { display: flex; align-items: baseline; gap: 12px; }
+.glos-reconocidas .explica { padding: 8px 0 0; }
+.tabla-reconocidas { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+.tabla-reconocidas th { text-align: left; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding: 6px 8px 6px 0; border-bottom: 1px solid var(--rule); }
+.tabla-reconocidas td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--rule-soft); vertical-align: baseline; }
+.tabla-reconocidas td.mono { font-size: 11.5px; word-break: break-all; }
+.tabla-reconocidas .num { text-align: right; padding-right: 0; }
+.glos-equivalencias { margin: 0 14px 14px; padding-top: 10px; border-top: 1px solid var(--rule); }
+.glos-equivalencias ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; font-size: 12px; }
+.glos-equivalencias li { display: flex; align-items: baseline; gap: 12px; }
+.btn-link { background: none; border: 0; padding: 0; font: inherit; font-size: 11.5px; color: var(--err); text-decoration: underline; cursor: pointer; }
+@media (max-width: 640px) {
+  .tabla-reconocidas thead { display: none; }
+  .tabla-reconocidas tr { display: grid; grid-template-columns: 1fr auto; padding: 6px 0; border-bottom: 1px solid var(--rule-soft); }
+  .tabla-reconocidas td { border: 0; padding: 1px 0; }
+  .tabla-reconocidas td:first-child { grid-column: 1 / -1; }
+}
