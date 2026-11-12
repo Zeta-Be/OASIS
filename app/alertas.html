@@ -99,7 +99,7 @@
 
     <section v-for="g in grupos" :key="g.alerta" class="card grupo-alertas">
       <div class="card-cab">
-        <h2>{{ g.titulo }}<span class="cuenta">{{ g.casos.length }}</span></h2>
+        <h2>{{ g.titulo }}<span class="cuenta" :class="{ larga: g.destino === 'glosario', cero: !g.casos.length }">{{ cuentaDe(g) }}</span></h2>
       </div>
       <p v-if="g.explica" class="explica">{{ g.explica }}</p>
 
@@ -128,6 +128,73 @@
           <div v-if="formTax(t.texto).ok" class="tax-ok">{{ formTax(t.texto).ok }}</div>
         </li>
       </ul>
+
+      <!-- Campaña fuera del glosario: una fila por campaña; sus compras, desplegables.
+           ADMIN puede declarar una equivalencia manual con una familia del glosario. -->
+      <template v-else-if="g.destino === 'glosario'">
+        <ul v-if="g.casos.length" class="lista-taxonomia">
+          <li v-for="t in gruposTaxonomia(g.casos)" :key="t.texto">
+            <details class="glos">
+              <summary class="tax-cab">
+                <span class="tax-texto mono">{{ t.texto }}</span>
+                <span class="tax-n">{{ plural(t.casos.length, 'compra', 'compras') }}</span>
+                <span class="glos-ver">ver compras</span>
+              </summary>
+              <div class="tax-compras mono">
+                <a v-for="a in t.casos" :key="a.compra_id" :href="enlace({ destino: 'compra' }, a)"
+                   :title="ubicacion(a)">{{ a.referencia }}</a>
+              </div>
+            </details>
+            <form v-if="esAdmin" class="tax-form" @submit.prevent="guardarEquivalencia(t.texto)">
+              <div class="campo" :class="{ err: formEq(t.texto).error }">
+                <label :for="'eq-' + t.texto">{{ piezasTax(t.texto).corto }} ({{ piezasTax(t.texto).bu }}) equivale a la familia del glosario</label>
+                <input :id="'eq-' + t.texto" v-model="formEq(t.texto).valor" class="mono" autocomplete="off" list="glosario-mercado"
+                       :disabled="formEq(t.texto).ocupado" placeholder="Por ejemplo CM o CMDUR">
+              </div>
+              <button type="submit" class="btn" :disabled="formEq(t.texto).ocupado">
+                {{ formEq(t.texto).ocupado ? 'Guardando…' : 'Guardar equivalencia' }}
+              </button>
+            </form>
+            <div v-if="formEq(t.texto).error" class="campo-error">{{ formEq(t.texto).error }}</div>
+          </li>
+        </ul>
+        <div v-else class="vacio glos-vacio">Ninguna campaña queda fuera del glosario{{ codigoFiltro ? ' en ' + codigoFiltro : '' }}.</div>
+        <datalist v-if="esAdmin" id="glosario-mercado">
+          <option v-for="n in glosarioDelMercado" :key="n" :value="n"></option>
+        </datalist>
+        <div v-if="eqMensaje" class="tax-ok glos-mensaje">{{ eqMensaje }}</div>
+
+        <!-- Solo informativo: lo que OASIS reconoce sin que esté tal cual en el glosario -->
+        <details v-if="reconocidas.length" class="glos glos-reconocidas">
+          <summary>
+            <span class="glos-sub">Reconocidas por familia</span>
+            <span class="tax-n">{{ plural(reconocidas.length, 'campaña', 'campañas') }} · {{ plural(comprasReconocidas, 'compra', 'compras') }}</span>
+            <span class="glos-ver">ver detalle</span>
+          </summary>
+          <p class="explica">No salen como alerta: su nombre corto coincide con una campaña del glosario quitando la fase (PRE, DUR, EXT) o la numeración final, con el año escrito con 2 o 4 dígitos, o por una equivalencia manual. La compra conserva su campaña tal como viene del Flow; OASIS no le asigna una fase.</p>
+          <table class="tabla-reconocidas">
+            <thead><tr><th>Campaña de la compra</th><th>Cómo</th><th>Glosario</th><th class="num">Compras</th></tr></thead>
+            <tbody>
+              <tr v-for="x in reconocidas" :key="x.mercado_id + x.taxonomia">
+                <td class="mono">{{ x.taxonomia }}</td>
+                <td>{{ REGLA_TEXTO[x.regla] || x.regla }}<span class="mono"> · {{ x.familia }}</span></td>
+                <td class="mono">{{ (x.glosario || []).join(' / ') }}</td>
+                <td class="num mono">{{ x.compras.toLocaleString('es-CO') }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </details>
+
+        <div v-if="equivalenciasVisibles.length" class="glos-equivalencias">
+          <span class="glos-sub">Equivalencias manuales</span>
+          <ul>
+            <li v-for="e in equivalenciasVisibles" :key="e.id">
+              <span class="mono">{{ e.texto }} ({{ e.bu }}) → {{ e.familia }}</span>
+              <button v-if="esAdmin" type="button" class="btn-link" @click="borrarEquivalencia(e)">Quitar</button>
+            </li>
+          </ul>
+        </div>
+      </template>
 
       <ul v-else class="lista-alertas">
         <li v-for="a in g.casos" :key="a.alerta + a.referencia + a.compra_id + '-' + a.material_id">

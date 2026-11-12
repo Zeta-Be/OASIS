@@ -18,8 +18,8 @@ const TIPOS_ALERTA = [
   // De la carga de varios mercados (sql/mercados.sql): todo entra y queda aquí.
   { alerta: 'campaña sin taxonomía', titulo: 'Campaña sin taxonomía', destino: 'taxonomia',
     explica: 'La columna CAMPAÑA del Flow no tiene formato de taxonomía. Escribe la taxonomía correcta: corrige estas compras y las próximas cargas la traducen solas.' },
-  { alerta: 'campaña fuera del glosario', titulo: 'Campaña fuera del glosario', destino: 'compra',
-    explica: 'La taxonomía es válida, pero su campaña no está en el glosario del mercado. Se resuelve agregándola al Glosario del Sheets.' },
+  { alerta: 'campaña fuera del glosario', titulo: 'Campaña fuera del glosario', destino: 'glosario',
+    explica: 'Estas campañas tienen el formato correcto, pero no están en el glosario oficial de campañas del país. No afecta la inversión. Lo resuelve quien administra el glosario de ZetaBé: agregando la campaña al glosario, o corrigiendo la campaña de la compra si está mal escrita.' },
   { alerta: 'compra incompleta', titulo: 'Compra incompleta', destino: 'compra',
     explica: 'Le falta un dato que el Flow dejó vacío. Sin fechas, la compra no reparte su valor.' },
   { alerta: 'compra sin tipo de costo', titulo: 'Sin tipo de costo', destino: 'compra',
@@ -33,6 +33,11 @@ const TIPOS_ALERTA = [
 ];
 
 const FORM_VACIO = Object.freeze({ valor: '', ocupado: false, error: '', ok: '' });
+
+// Cómo reconoció OASIS una campaña que no está tal cual en el glosario
+// (v_campanas_sin_glosario, sql/campanas_familia.sql).
+const REGLA_TEXTO = { FAMILIA: 'por familia', 'AÑO': 'por año', EQUIVALENCIA: 'por equivalencia manual' };
+const plural = (n, uno, varios) => `${n.toLocaleString('es-CO')} ${n === 1 ? uno : varios}`;
 
 // Estas no llevan card propia: la card «Posibles duplicados» ya las muestra con sus botones.
 const ALERTAS_EN_OTRA_CARD = ['proveedores por confirmar'];
@@ -79,7 +84,13 @@ async function iniciar() {
       analizando: false,
       dup: { mensaje: '', clase: '' },
       taxonomias: {},           // texto del Flow -> { valor, ocupado, error, ok }
+      sinGlosario: [],          // v_campanas_sin_glosario: regla con que OASIS reconoce cada campaña
+      equivalencias: [],        // campanas_equivalencias (escribe solo ADMIN)
+      glosario: [],             // nombres del glosario, para sugerir la familia
+      equiv: {},                // mercado|taxonomía -> { valor, ocupado, error }
+      eqMensaje: '',
       CLASE_CONFIANZA,
+      REGLA_TEXTO,
     }),
 
     computed: {
@@ -101,6 +112,11 @@ async function iniciar() {
           if (ALERTAS_EN_OTRA_CARD.includes(a.alerta)) continue;
           if (!porTipo.has(a.alerta)) porTipo.set(a.alerta, []);
           porTipo.get(a.alerta).push(a);
+        }
+        // La card del glosario se queda aunque no haya alertas, si hay
+        // campañas reconocidas o equivalencias que mostrar.
+        if (!porTipo.has('campaña fuera del glosario') && (this.reconocidas.length || this.equivalenciasVisibles.length)) {
+          porTipo.set('campaña fuera del glosario', []);
         }
         const conocidos = TIPOS_ALERTA.map(t => t.alerta);
         const extra = [...porTipo.keys()].filter(t => !conocidos.includes(t))
@@ -150,6 +166,20 @@ async function iniciar() {
         };
       },
       total() { return this.grupos.reduce((s, g) => s + g.casos.length, 0); },
+      // Campañas del mercado que OASIS reconoce sin estar tal cual en el glosario.
+      reconocidas() {
+        return this.sinGlosario
+          .filter(x => x.regla && (!this.filtros.mercado || x.mercado_id === this.filtros.mercado))
+          .sort((a, b) => b.compras - a.compras || a.taxonomia.localeCompare(b.taxonomia));
+      },
+      comprasReconocidas() { return this.reconocidas.reduce((s, x) => s + x.compras, 0); },
+      equivalenciasVisibles() {
+        return this.equivalencias.filter(e => !this.filtros.mercado || e.mercado_id === this.filtros.mercado);
+      },
+      glosarioDelMercado() {
+        return this.glosario.filter(c => c.mercado_id === this.filtros.mercado).map(c => c.nombre_unico).sort();
+      },
+      esAdmin() { return this.usuario.rol === 'ADMIN'; },
       puedeCorregir() { return ['PLANNING', 'ZB', 'ADMIN'].includes(this.usuario.rol); },
     },
 
@@ -177,8 +207,8 @@ async function iniciar() {
       ubicacion(a) { return this.ubicaciones.get(a.compra_id) || ''; },
 
       // ---------------------------------------------------------- Taxonomía
-      // «Campaña sin taxonomía» se agrupa por el texto del Flow: una corrección
-      // arregla todas las compras con ese texto.
+      // «Campaña sin taxonomía» y «campaña fuera del glosario» se agrupan por
+      // campaña (el detalle de la alerta): una fila por campaña, no por compra.
       gruposTaxonomia(casos) {
         const m = new Map();
         for (const a of casos) {
@@ -193,6 +223,11 @@ async function iniciar() {
       prepararTaxonomias() {
         const k = this.codigoFiltro;
         for (const a of this.alertas) {
+          if (a.alerta === 'campaña fuera del glosario' && a.mercado === k && a.detalle) {
+            const ke = `${a.mercado_id}|${a.detalle}`;
+            if (!this.equiv[ke]) this.equiv[ke] = { valor: '', ocupado: false, error: '' };
+            continue;
+          }
           if (a.alerta !== 'campaña sin taxonomía' || a.mercado !== k || !a.detalle) continue;
           const clave = `${k}|${a.detalle}`;
           if (!this.taxonomias[clave]) this.taxonomias[clave] = { valor: `${k}_ML_`, ocupado: false, error: '', ok: '' };
@@ -217,6 +252,59 @@ async function iniciar() {
         f.ok = `${data} ${data === 1 ? 'compra corregida' : 'compras corregidas'}`;
         await this.recargarAlertas();
       },
+      // Título de la card: «2 campañas · 52 compras» en las agrupadas por campaña.
+      cuentaDe(g) {
+        if (g.destino !== 'glosario') return g.casos.length.toLocaleString('es-CO');
+        const campanas = new Set(g.casos.map(a => a.detalle)).size;
+        return `${plural(campanas, 'campaña', 'campañas')} · ${plural(g.casos.length, 'compra', 'compras')}`;
+      },
+      plural,
+
+      // ------------------------------------------------- Equivalencias manuales
+      // Para lo que las reglas no cubren: el nombre corto de la campaña del Flow
+      // equivale a una familia del glosario (CYBERMONDAY → CM). Solo ADMIN; la
+      // base normaliza (CMDUR → CM), valida y deja auditoría.
+      piezasTax(tax) {
+        const p = (tax || '').split('_');
+        return { bu: p[1] || 'ML', corto: p.slice(4, -1).join('_') };
+      },
+      formEq(tax) { return this.equiv[`${this.filtros.mercado}|${tax}`] || FORM_VACIO; },
+      async guardarEquivalencia(tax) {
+        const f = this.formEq(tax);
+        const { bu, corto } = this.piezasTax(tax);
+        f.error = '';
+        this.eqMensaje = '';
+        if (!f.valor.trim()) { f.error = 'Escribe la campaña o familia del glosario (por ejemplo CM o CMDUR)'; return; }
+        f.ocupado = true;
+        const { data, error } = await sb.from('campanas_equivalencias')
+          .insert({ mercado_id: this.filtros.mercado, bu, texto: corto, familia: f.valor.trim() })
+          .select('id, mercado_id, bu, texto, familia, creado_en').single();
+        f.ocupado = false;
+        if (error) { f.error = 'No se guardó: ' + await mensajeDe(error); return; }
+        f.valor = '';
+        this.eqMensaje = `${data.texto} (${data.bu}) equivale ahora a la familia ${data.familia}.`;
+        await this.cargarGlosario();
+        await this.recargarAlertas();
+      },
+      async borrarEquivalencia(e) {
+        if (!confirm(`¿Quitar la equivalencia ${e.texto} → ${e.familia}? Sus compras vuelven a la alerta.`)) return;
+        const { data, error } = await sb.from('campanas_equivalencias').delete().eq('id', e.id).select('id');
+        if (error || !data || !data.length) { this.eqMensaje = 'No se pudo quitar: ' + (error ? await mensajeDe(error) : 'sin permiso'); return; }
+        this.eqMensaje = `Se quitó ${e.texto} → ${e.familia}.`;
+        await this.cargarGlosario();
+        await this.recargarAlertas();
+      },
+      async cargarGlosario() {
+        const [sinGlosario, equivalencias] = await Promise.all([
+          traerTodo(() => sb.from('v_campanas_sin_glosario')
+            .select('mercado_id, mercado, bu, taxonomia, nombre_corto, regla, familia, glosario, compras').order('taxonomia')),
+          traerTodo(() => sb.from('campanas_equivalencias')
+            .select('id, mercado_id, bu, texto, familia, creado_en').order('texto')),
+        ]);
+        this.sinGlosario = sinGlosario;
+        this.equivalencias = equivalencias;
+      },
+
       async recargarAlertas() {
         this.alertas = await traerTodo(() => sb.from('v_alertas')
           .select('alerta, referencia, mercado, compra_id, material_id, mercado_id, detalle')
@@ -352,6 +440,10 @@ async function iniciar() {
           this.ubicaciones = new Map(compras.map(c => [c.id, c.ubicacion]));
           await this.cargarDuplicados();
           await this.cargarPorConfirmar();
+          await this.cargarGlosario();
+          if (this.esAdmin) {
+            this.glosario = await traerTodo(() => sb.from('campanas').select('mercado_id, nombre_unico').order('id'));
+          }
           // Alertas es por mercado: sin «Todos». Sin mercado recordado, el propio o el primero.
           const inicial = mercadoInicial(this.misMercados, propios.map(p => p.mercado_id));
           this.filtros.mercado = inicial || (this.misMercados[0] || {}).id || '';
