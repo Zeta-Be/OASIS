@@ -40,7 +40,9 @@ const REGLA_TEXTO = { FAMILIA: 'por familia', 'AÑO': 'por año', EQUIVALENCIA: 
 const plural = (n, uno, varios) => `${n.toLocaleString('es-CO')} ${n === 1 ? uno : varios}`;
 
 // Estas no llevan card propia: la card «Posibles duplicados» ya las muestra con sus botones.
-const ALERTAS_EN_OTRA_CARD = ['proveedores por confirmar'];
+// «taxonomía por confirmar» (sql/alertas_alias.sql) suma en la barra, pero se
+// muestra y se resuelve en la card «Taxonomías por confirmar».
+const ALERTAS_EN_OTRA_CARD = ['proveedores por confirmar', 'taxonomía por confirmar'];
 
 // Posibles duplicados: confianza → clase de pill (DISENO.md, pills de estado).
 const CLASE_CONFIANZA = { ALTA: 'ok', MEDIA: 'prop', BAJA: 'err' };
@@ -62,8 +64,17 @@ async function mensajeDe(error) {
   return error.message || String(error);
 }
 
+// Alertas ya cargadas, para el número de la barra (comun.js): esta pantalla
+// cuenta lo que tiene en vez de volver a calcular v_alertas en la base.
+let alertasParaBarra = null;
+
+// Cuántos ids de compra van por llamada al pedir ubicaciones (largo de la URL).
+const IDS_POR_LLAMADA = 150;
+
 async function iniciar() {
   const usuario = await requerirAcceso();
+  usarContadorAlertasLocal(codigo => (alertasParaBarra === null ? null
+    : alertasParaBarra.filter(a => !codigo || a.mercado === codigo).length));
   pintarBarra(document.getElementById('barra'), usuario, 'alertas');
 
   createApp({
@@ -204,7 +215,11 @@ async function iniciar() {
         this.dup = { mensaje: '', clase: '' };
         this.prepararTaxonomias();
       },
-      alertas() { this.prepararTaxonomias(); },
+      alertas(v) {
+        alertasParaBarra = v;
+        actualizarAlertasBarra(this.codigoFiltro);
+        this.prepararTaxonomias();
+      },
     },
 
     methods: {
@@ -320,11 +335,33 @@ async function iniciar() {
         this.equivalencias = equivalencias;
       },
 
-      async recargarAlertas() {
-        this.alertas = await traerTodo(() => sb.from('v_alertas')
+      leerAlertas() {
+        return traerTodo(() => sb.from('v_alertas')
           .select('alerta, referencia, mercado, compra_id, material_id, mercado_id, detalle')
           .order('alerta').order('mercado').order('referencia'));
-        actualizarAlertasBarra(this.codigoFiltro);
+      },
+      // El watcher de alertas actualiza la barra con lo ya cargado.
+      async recargarAlertas() {
+        this.alertas = await this.leerAlertas();
+        this.cargarUbicaciones();
+      },
+      // Ubicación de las compras que tienen alerta, no de todas: unas cientos de
+      // filas en vez de ~8.500. No se espera: las cards se pintan sin ella y la
+      // ubicación aparece al llegar.
+      async cargarUbicaciones() {
+        const ids = [...new Set(this.alertas.map(a => a.compra_id).filter(Boolean))];
+        const lotes = [];
+        for (let i = 0; i < ids.length; i += IDS_POR_LLAMADA) lotes.push(ids.slice(i, i + IDS_POR_LLAMADA));
+        try {
+          const partes = await Promise.all(lotes.map(lote =>
+            sb.from('compras').select('id, ubicacion').in('id', lote).then(({ data, error }) => {
+              if (error) throw error;
+              return data;
+            })));
+          this.ubicaciones = new Map(partes.flat().map(c => [c.id, c.ubicacion]));
+        } catch (e) {
+          console.error('No se pudieron leer las ubicaciones', e);
+        }
       },
 
       // ------------------------------------------------- Taxonomías por confirmar
@@ -416,8 +453,7 @@ async function iniciar() {
         this.duplicados = this.duplicados.filter(x => x.id !== d.id);
         this.dup = { clase: 'ok', mensaje: `Unificado en «${d._canonico.trim()}»: ${data} ${data === 1 ? 'compra cambió' : 'compras cambiaron'}.` };
         // Las ubicaciones de las alertas pueden haber cambiado.
-        const compras = await traerTodo(() => sb.from('compras').select('id, ubicacion').order('id')).catch(() => null);
-        if (compras) this.ubicaciones = new Map(compras.map(c => [c.id, c.ubicacion]));
+        this.cargarUbicaciones();
       },
 
       async rechazar(d) {
@@ -434,15 +470,19 @@ async function iniciar() {
 
       async cargar() {
         try {
-          const [mercados, mis, propios, alertas, compras, uso, huerfanas] = await Promise.all([
+          // Todo en una sola tanda en paralelo: la pantalla espera solo a la
+          // lectura más lenta (v_alertas), no a la suma de todas.
+          const [mercados, mis, propios, alertas, uso, huerfanas, , , , glosario] = await Promise.all([
             traerTodo(() => sb.from('mercados').select('id, codigo, nombre').order('id')),
             sb.rpc('fn_mis_mercados'),
             traerTodo(() => sb.from('usuario_mercados').select('mercado_id').eq('usuario_id', this.usuario.id).order('mercado_id')),
-            traerTodo(() => sb.from('v_alertas').select('alerta, referencia, mercado, compra_id, material_id, mercado_id, detalle')
-              .order('alerta').order('mercado').order('referencia')),
-            traerTodo(() => sb.from('compras').select('id, ubicacion').order('id')),
+            this.leerAlertas(),
             sb.rpc('fn_uso_storage'),
             sb.rpc('fn_evidencias_huerfanas'),
+            this.cargarDuplicados(),
+            this.cargarPorConfirmar(),
+            this.cargarGlosario(),
+            this.esAdmin ? traerTodo(() => sb.from('campanas').select('mercado_id, nombre_unico').order('id')) : [],
           ]);
           if (mis.error) throw mis.error;
           if (uso.error) console.error('No se pudo leer el uso de Storage', uso.error);
@@ -452,15 +492,8 @@ async function iniciar() {
           this.mercados = mercados;
           this.misMercadoIds = (mis.data || []).map(x => (typeof x === 'object' ? Object.values(x)[0] : x)).map(Number);
           this.alertas = alertas;
-          this.ubicaciones = new Map(compras.map(c => [c.id, c.ubicacion]));
-          // En paralelo: la pantalla no pinta nada hasta tenerlas todas.
-          const [, , , glosario] = await Promise.all([
-            this.cargarDuplicados(),
-            this.cargarPorConfirmar(),
-            this.cargarGlosario(),
-            this.esAdmin ? traerTodo(() => sb.from('campanas').select('mercado_id, nombre_unico').order('id')) : [],
-          ]);
           this.glosario = glosario;
+          this.cargarUbicaciones();
           // Alertas es por mercado: sin «Todos». Sin mercado recordado, el propio o el primero.
           const inicial = mercadoInicial(this.misMercados, propios.map(p => p.mercado_id));
           this.filtros.mercado = inicial || (this.misMercados[0] || {}).id || '';
