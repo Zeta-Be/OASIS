@@ -177,16 +177,31 @@ function mercadoInicial(misMercados, propiosIds) {
 }
 
 // Número junto a "Alertas": el total de v_alertas del mercado activo.
+// Una página que ya tiene las alertas cargadas (Alertas) registra su propio
+// contador con usarContadorAlertasLocal: así la barra no vuelve a calcular la
+// vista en la base. El contador devuelve null mientras no hay datos.
 let turnoAlertas = 0;
+let contadorAlertasLocal = null;
+function usarContadorAlertasLocal(fn) { contadorAlertasLocal = fn; }
+
+function pintarCuentaAlertas(el, n, codigo) {
+  el.textContent = n ? n.toLocaleString('es-CO') : '';
+  el.title = el.textContent ? `${el.textContent} alertas${codigo ? ' en ' + codigo : ''}` : '';
+}
+
 async function actualizarAlertasBarra(codigo) {
   const el = document.querySelector('.topbar .cuenta-alertas');
   if (!el) return;
   const turno = ++turnoAlertas;   // descarta respuestas que llegan tarde
+  if (contadorAlertasLocal) {
+    const n = contadorAlertasLocal(codigo);
+    if (n !== null) pintarCuentaAlertas(el, n, codigo);
+    return;
+  }
   let q = sb.from('v_alertas').select('alerta', { count: 'exact', head: true });
   if (codigo) q = q.eq('mercado', codigo);
   const { count, error } = await q;
   if (turno !== turnoAlertas) return;
   if (error) console.error('No se pudo contar las alertas', error);
-  el.textContent = !error && count ? count.toLocaleString('es-CO') : '';
-  el.title = el.textContent ? `${el.textContent} alertas${codigo ? ' en ' + codigo : ''}` : '';
+  pintarCuentaAlertas(el, error ? 0 : count, codigo);
 }
