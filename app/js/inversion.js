@@ -35,21 +35,21 @@ const COLUMNAS_INV = {
 
 // Columnas en el orden de cada vista. `orden` es único por fila: la paginación
 // de la API necesita un orden estable para no repetir ni saltar filas.
-// Total y Semanal se traen completas para el mercado elegido (pocas filas) por
-// `fn` (sql/fase2_inversion.sql). La Diaria no: tiene decenas de miles de
+// Total y Semanal se traen completas para el mercado elegido, en una sola
+// llamada, por `fn` (sql/inversion_por_mercado.sql). La Diaria no: tiene decenas de miles de
 // filas por mercado, así que se pide de a una página, ya filtrada en la base
 // (fn_inversion_filtrada, sql/inversion_precalculada.sql). KPIs y gráficos
 // salen de fn_inversion_resumen, que devuelve agregados, no filas.
 const PESTANAS = {
   total: {
-    titulo: 'Total', vista: 'v_inversion_total', fn: 'fn_inversion_total', vistaCliente: 'v_inversion_total_cliente',
+    titulo: 'Total', vista: 'v_inversion_total', fn: 'fn_inversion_total_mercado', vistaCliente: 'v_inversion_total_cliente',
     columnas: ['site', 'bu', 'proveedor', 'tipo_costo', 'formato', 'valor_total', 'id', 'id_ejecucion',
       'campana', 'sub_campana', 'fecha_inicio', 'fecha_fin', 'dias', 'pct_participacion',
       'costo_proyectado', 'costo_ejecutado', 'mes_compra', 'moneda'],
     orden: ['site', 'id_ejecucion'],
   },
   semanal: {
-    titulo: 'Semanal', vista: 'v_inversion_semanal', fn: 'fn_inversion_semanal', vistaCliente: 'v_inversion_semanal_cliente',
+    titulo: 'Semanal', vista: 'v_inversion_semanal', fn: 'fn_inversion_semanal_mercado', vistaCliente: 'v_inversion_semanal_cliente',
     columnas: ['site', 'bu', 'year', 'month', 'week', 'proveedor', 'tipo_costo', 'formato', 'valor_total',
       'id', 'id_ejecucion', 'campana', 'sub_campana', 'fecha_inicio', 'fecha_fin', 'dias',
       'costo_proyectado', 'costo_ejecutado', 'mes_compra', 'moneda'],
@@ -476,19 +476,22 @@ async function iniciar() {
         d.error = '';
         try {
           const columnas = [...p.columnas, 'campana_grupo'].join(', ');
-          const filas = await traerTodoParalelo((opciones) => {
-            // El Cliente lee su vista (un mercado a la vez); los demás, la función interna.
-            if (this.esCliente) {
+          let filas;
+          if (this.esCliente) {
+            // El Cliente lee su vista (un mercado a la vez), de a páginas.
+            filas = await traerTodoParalelo((opciones) => {
               if (opciones) return sb.from(p.vistaCliente).select('mercado_id', opciones).eq('mercado_id', mercado);
               let q = sb.from(p.vistaCliente).select(columnas).eq('mercado_id', mercado);
               for (const o of p.orden) q = q.order(o);
               return q;
-            }
-            if (opciones) return sb.rpc(p.fn, {}, { get: true, ...opciones }).eq('mercado_id', mercado);
-            let q = sb.rpc(p.fn, {}, { get: true }).select(columnas).eq('mercado_id', mercado);
-            for (const o of p.orden) q = q.order(o);
-            return q;
-          });
+            });
+          } else {
+            // Los demás: una sola llamada, ya filtrada por mercado y ordenada en
+            // la base (sql/inversion_por_mercado.sql).
+            const { data, error } = await sb.rpc(p.fn, { p_mercado: mercado });
+            if (error) throw error;
+            filas = data || [];
+          }
           if (turno !== d.turno) return;
           d.filas = Object.freeze(filas);
         } catch (e) {
